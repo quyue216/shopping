@@ -1,6 +1,7 @@
 import express from 'express';
 import healthRouter from './routes/health.js';
 import authRouter from './routes/auth.js';
+import ordersRouter from './routes/orders.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,6 +10,7 @@ app.use(express.json());
 
 app.use(healthRouter);
 app.use(authRouter);
+app.use(ordersRouter);
 
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {

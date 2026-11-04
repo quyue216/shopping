@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { createUser, findByIdentifier } from '../repositories/userRepository.js';
+import { HttpError } from '../httpError.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-secret-change-me';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '2h';
@@ -8,14 +9,6 @@ const BCRYPT_ROUNDS = 10;
 
 if (JWT_SECRET === 'dev-only-secret-change-me') {
   console.warn('[auth] JWT_SECRET 未配置，正在使用开发默认值，生产环境必须设置 JWT_SECRET');
-}
-
-/** 带 HTTP 状态码的业务错误，由全局错误处理转成响应 */
-export class HttpError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
 }
 
 function signToken(user) {
