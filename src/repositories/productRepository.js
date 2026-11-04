@@ -20,3 +20,11 @@ export async function decrementStock(client, productId, quantity) {
     [productId, quantity],
   );
 }
+
+/** 回补库存（订单取消时释放预留） */
+export async function increaseStock(client, productId, quantity) {
+  await client.query(
+    'UPDATE products SET stock = stock + $2 WHERE id = $1',
+    [productId, quantity],
+  );
+}

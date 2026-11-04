@@ -46,3 +46,21 @@ export async function markOrderPaid(client, orderId) {
     [orderId],
   );
 }
+
+/** 订单置为已取消；仅 pending 可取消（已支付/已取消不受影响），返回是否发生流转 */
+export async function cancelOrder(client, orderId) {
+  const { rows } = await client.query(
+    `UPDATE orders SET status = 'cancelled' WHERE id = $1 AND status = 'pending' RETURNING id`,
+    [orderId],
+  );
+  return rows[0] || null;
+}
+
+/** 查订单明细（回补库存用） */
+export async function getOrderItems(client, orderId) {
+  const { rows } = await client.query(
+    'SELECT product_id, quantity FROM order_items WHERE order_id = $1',
+    [orderId],
+  );
+  return rows;
+}

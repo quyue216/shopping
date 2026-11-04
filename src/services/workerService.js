@@ -1,7 +1,8 @@
 import pool from '../db/pool.js';
 import { claimNextTask, finishTask, rescheduleTask } from '../repositories/paymentTaskRepository.js';
 import { getPaymentById, updatePaymentResult } from '../repositories/paymentRepository.js';
-import { markOrderPaid } from '../repositories/orderRepository.js';
+import { markOrderPaid, cancelOrder, getOrderItems } from '../repositories/orderRepository.js';
+import { increaseStock } from '../repositories/productRepository.js';
 import * as provider from './paymentProvider.js';
 
 // 租约时长：Worker 必须在此时间内写回结果，超时任务可被其他 Worker 回收
@@ -19,8 +20,8 @@ function backoffSeconds(attempts) {
   return Math.min(attempts * 5, 60);
 }
 
-/** 在事务中按 version 写回任务；version 不匹配（任务已被回收）则回滚并报告 stale */
-async function withTaskWriteback(task, fn) {
+/** 在事务中执行写回；fn 返回的 writeback 为 null（version 不匹配被回收）则整体回滚并报告 stale */
+async function withTaskWriteback(fn) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -41,7 +42,7 @@ async function withTaskWriteback(task, fn) {
 
 /** 支付成功：支付置 succeeded → 订单置 paid → 任务置 completed（同一事务） */
 function finalizeSuccess(task, payment, { providerTransactionId = null, zeroAmount = false } = {}) {
-  return withTaskWriteback(task, async (client) => {
+  return withTaskWriteback(async (client) => {
     await updatePaymentResult(client, { id: payment.id, status: 'succeeded', providerTransactionId }); //支付信息写入
     await markOrderPaid(client, payment.order_id); //订单记录更新
     const writeback = await finishTask(client, { taskId: task.id, version: task.version, status: 'completed' });
@@ -49,10 +50,24 @@ function finalizeSuccess(task, payment, { providerTransactionId = null, zeroAmou
   });
 }
 
-/** 业务失败（如余额不足）：支付置 failed，任务 completed（重试无意义，不再重试） */
+/**
+ * 业务失败（如余额不足）：支付置 failed，任务 completed（重试无意义，不再重试）。
+ * 方案 B：同事务取消订单并回补预留库存。
+ * 守卫：只有支付本次确实发生流转（非重复写回）、订单确实从 pending 取消成功，才回补库存，
+ * 避免并发/重试下重复归还。
+ */
 function finalizeBusinessFailure(task, payment, reason) {
-  return withTaskWriteback(task, async (client) => {
-    await updatePaymentResult(client, { id: payment.id, status: 'failed' });
+  return withTaskWriteback(async (client) => {
+    const transitioned = await updatePaymentResult(client, { id: payment.id, status: 'failed' });
+    if (transitioned) {
+      const cancelled = await cancelOrder(client, payment.order_id);
+      if (cancelled) {
+        const items = await getOrderItems(client, payment.order_id);
+        for (const item of items) {
+          await increaseStock(client, item.product_id, item.quantity); // 回补下单时预留的库存
+        }
+      }
+    }
     const writeback = await finishTask(client, { taskId: task.id, version: task.version, status: 'completed' });
     return { outcome: 'failed', reason, writeback };
   });
@@ -60,7 +75,7 @@ function finalizeBusinessFailure(task, payment, reason) {
 
 /** 结果不明确（超时）：支付置 unknown，任务退避重试；下次领取先查询原交易，不重新扣款 */
 function markUnknown(task, payment) {
-  return withTaskWriteback(task, async (client) => {
+  return withTaskWriteback(async (client) => {
     await updatePaymentResult(client, { id: payment.id, status: 'unknown' });
     const writeback = await rescheduleTask(client, {
       taskId: task.id,
@@ -74,7 +89,7 @@ function markUnknown(task, payment) {
 
 /** 可重试的失败：退回 pending 并退避；超过最大尝试次数则任务置 failed */
 function retryOrFail(task, reason) {
-  return withTaskWriteback(task, async (client) => {
+  return withTaskWriteback(async (client) => {
     if (task.attempts >= MAX_ATTEMPTS) {
       const writeback = await finishTask(client, { taskId: task.id, version: task.version, status: 'failed' });
       return { outcome: 'failed', reason: `超过最大尝试次数: ${reason}`, writeback };
@@ -96,7 +111,7 @@ function retryOrFail(task, reason) {
 export async function processPaymentTask(task) {
   const payment = await getPaymentById(pool, task.payment_id);
   if (!payment) {
-    return withTaskWriteback(task, async (client) => ({
+    return withTaskWriteback(async (client) => ({
       outcome: 'failed',
       reason: `支付记录 ${task.payment_id} 不存在`,
       writeback: await finishTask(client, { taskId: task.id, version: task.version, status: 'failed' }),
