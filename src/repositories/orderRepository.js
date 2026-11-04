@@ -38,3 +38,11 @@ export async function insertOrderItem(client, { orderId, productId, productName,
     [orderId, productId, productName, unitPrice, quantity],
   );
 }
+
+/** 订单置为已支付；仅 pending 可流转，重复写回无副作用 */
+export async function markOrderPaid(client, orderId) {
+  await client.query(
+    `UPDATE orders SET status = 'paid' WHERE id = $1 AND status = 'pending'`,
+    [orderId],
+  );
+}
