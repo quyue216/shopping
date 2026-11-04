@@ -70,6 +70,20 @@ export async function createOrder({ userId, idempotencyKey, items: rawItems }) {
     const products = await lockProductsByIds(client, ids);
     const byId = new Map(products.map((p) => [Number(p.id), p]));
 
+    // 并发同键请求：等待行锁期间，对方可能已提交同一笔订单。
+    // 拿到锁后、进入库存判断前重新识别：内容一致则返回已有订单，
+    // 避免把"对方已下单成功"误报为"库存不足"。
+    if (!existing) {
+      const concurrent = await findOrderWithItemsByKey(client, userId, idempotencyKey.trim());
+      if (concurrent) {
+        if (!sameContent(concurrent.items, items)) {
+          throw new HttpError(409, '该幂等键已被用于不同的购买内容');
+        }
+        await client.query('COMMIT');
+        return { order: concurrent, replayed: true };
+      }
+    }
+
     let totalAmount = 0;
     for (const item of items) {
       const product = byId.get(item.productId);
