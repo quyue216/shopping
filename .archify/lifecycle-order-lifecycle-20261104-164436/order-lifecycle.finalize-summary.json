@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "lifecycle",
+  "quality": "showcase",
+  "specification": {
+    "path": "E:\\quyue-work\\study\\shopping\\.archify\\lifecycle-order-lifecycle-20261104-164436\\candidate.json",
+    "sha256": "a4cd86fbda48bf55dc874facabc3391bb5ea14297aabc9c0f7d5d7156db91c14",
+    "bytes": 6614
+  },
+  "artifact": {
+    "path": "E:\\quyue-work\\study\\shopping\\.archify\\lifecycle-order-lifecycle-20261104-164436\\order-lifecycle.html",
+    "sha256": "99f02dd3b330e112c979aa344bbe54afc70b708643e7fd06fd3798558d61e575",
+    "bytes": 853660
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "E:\\quyue-work\\study\\shopping\\.archify\\lifecycle-order-lifecycle-20261104-164436\\order-lifecycle.finalize.json",
+    "summaryReceipt": "E:\\quyue-work\\study\\shopping\\.archify\\lifecycle-order-lifecycle-20261104-164436\\order-lifecycle.finalize-summary.json",
+    "browserCheckReceipt": "E:\\quyue-work\\study\\shopping\\.archify\\lifecycle-order-lifecycle-20261104-164436\\order-lifecycle.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-04T08:49:16.328Z",
+    "source": "network",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 8797,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}

@@ -1,0 +1,169 @@
+{
+  "schema_version": 3,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "订单全生命周期：创建、支付与异常恢复",
+    "output": ".archify/lifecycle-order-lifecycle-20261104-164436/order-lifecycle.html",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "repository": {
+      "url": "https://gitee.com/pdkax/shopping.git",
+      "provider": "gitee",
+      "revision": "799b739f54831277a2142de47ac8a410ec08657b"
+    }
+  },
+  "mainPath": ["request", "created", "processing", "paid"],
+  "states": [
+    {
+      "id": "request",
+      "type": "start",
+      "label": "下单请求",
+      "sublabel": "POST /orders（需登录）",
+      "tag": "入口",
+      "step": "01",
+      "sources": [
+        { "path": "src/routes/orders.js", "line": 12, "end_line": 27, "label": "POST /orders 路由" }
+      ]
+    },
+    {
+      "id": "created",
+      "type": "active",
+      "label": "订单已创建",
+      "sublabel": "pending · 库存已预留",
+      "tag": "待支付",
+      "step": "02",
+      "sources": [
+        { "path": "src/services/orderService.js", "line": 48, "end_line": 131, "label": "createOrder 事务" }
+      ]
+    },
+    {
+      "id": "processing",
+      "type": "active",
+      "label": "支付执行中",
+      "sublabel": "Worker 调用支付平台",
+      "tag": "处理中",
+      "step": "03",
+      "sources": [
+        { "path": "src/services/workerService.js", "line": 111, "end_line": 163, "label": "processPaymentTask" },
+        { "path": "src/repositories/paymentTaskRepository.js", "line": 20, "end_line": 41, "label": "SKIP LOCKED 领取" }
+      ]
+    },
+    {
+      "id": "paid",
+      "type": "success",
+      "label": "已支付",
+      "sublabel": "订单 paid · 任务 completed",
+      "tag": "终态",
+      "step": "04",
+      "sources": [
+        { "path": "src/services/workerService.js", "line": 44, "end_line": 51, "label": "finalizeSuccess" }
+      ]
+    },
+    {
+      "id": "replayed",
+      "type": "neutral",
+      "label": "幂等重放",
+      "sublabel": "同键同内容返回已有订单",
+      "tag": "不重复扣库存",
+      "sources": [
+        { "path": "src/services/orderService.js", "line": 59, "end_line": 65, "label": "幂等键检查" },
+        { "path": "src/services/orderService.js", "line": 75, "end_line": 83, "label": "拿锁后复查" }
+      ]
+    },
+    {
+      "id": "rejected",
+      "type": "failure",
+      "label": "下单失败",
+      "sublabel": "参数错误 / 库存不足",
+      "tag": "事务回滚",
+      "sources": [
+        { "path": "src/services/orderService.js", "line": 88, "end_line": 96, "label": "库存校验" },
+        { "path": "src/services/orderService.js", "line": 132, "end_line": 132, "label": "ROLLBACK" }
+      ]
+    },
+    {
+      "id": "unknown",
+      "type": "waiting",
+      "label": "结果不明",
+      "sublabel": "超时：先查原交易",
+      "tag": "不重复扣款",
+      "sources": [
+        { "path": "src/services/workerService.js", "line": 77, "end_line": 88, "label": "markUnknown" },
+        { "path": "src/services/workerService.js", "line": 129, "end_line": 138, "label": "先查询再决定" }
+      ]
+    },
+    {
+      "id": "retry",
+      "type": "waiting",
+      "label": "退避待重试",
+      "sublabel": "available_at 推迟",
+      "tag": "最多 5 次",
+      "sources": [
+        { "path": "src/services/workerService.js", "line": 98, "end_line": 105, "label": "reschedule 退避" }
+      ]
+    },
+    {
+      "id": "cancelled",
+      "type": "failure",
+      "label": "已取消",
+      "sublabel": "业务失败 · 回补库存",
+      "tag": "终态",
+      "sources": [
+        { "path": "src/services/workerService.js", "line": 59, "end_line": 74, "label": "取消 + 回补" }
+      ]
+    },
+    {
+      "id": "failed",
+      "type": "failure",
+      "label": "任务失败",
+      "sublabel": "超最大尝试次数",
+      "tag": "人工排查",
+      "sources": [
+        { "path": "src/services/workerService.js", "line": 92, "end_line": 96, "label": "retryOrFail 上限" }
+      ]
+    }
+  ],
+  "transitions": [
+    { "id": "t-request-created", "from": "request", "to": "created", "label": "校验 + 幂等检查通过" },
+    { "id": "t-request-replayed", "from": "request", "to": "replayed", "label": "同键同内容" },
+    { "id": "t-request-rejected", "from": "request", "to": "rejected", "label": "校验失败 / 库存不足", "variant": "security" },
+    { "id": "t-created-processing", "from": "created", "to": "processing", "label": "Worker 领取任务" },
+    { "id": "t-processing-paid", "from": "processing", "to": "paid", "label": "支付成功" },
+    { "id": "t-processing-cancelled", "from": "processing", "to": "cancelled", "label": "业务失败，取消并回补库存", "variant": "security" },
+    { "id": "t-processing-unknown", "from": "processing", "to": "unknown", "label": "超时，结果不明", "variant": "dashed" },
+    { "id": "t-unknown-paid", "from": "unknown", "to": "paid", "label": "查询原交易：已成功" },
+    { "id": "t-unknown-cancelled", "from": "unknown", "to": "cancelled", "label": "查询原交易：已失败", "variant": "security" },
+    { "id": "t-unknown-retry", "from": "unknown", "to": "retry", "label": "查询无果，退避", "variant": "dashed" },
+    { "id": "t-retry-processing", "from": "retry", "to": "processing", "label": "到点重新领取" },
+    { "id": "t-retry-failed", "from": "retry", "to": "failed", "label": "超过最大尝试次数", "variant": "security" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "创建阶段的三道防护",
+      "items": [
+        "参数或库存校验失败：整个事务回滚，不留任何残留",
+        "同幂等键同内容重试：返回已有订单，库存只扣一次",
+        "并发同键请求：拿锁后复查 + 唯一约束兜底，自动转为重放"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "异常恢复机制",
+      "items": [
+        "超时只把支付置为 unknown，不当作失败",
+        "重新领取后先查询原交易结果，成功则直接补写回，绝不重复扣款",
+        "查询无果按 attempts×5 秒退避重试，超过 5 次转人工排查"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "终态与资源归还",
+      "items": [
+        "支付成功：支付、订单、任务在同一事务中置为终态",
+        "业务失败（余额不足）：订单取消并逐明细回补预留库存",
+        "所有任务写回带 version 校验，过期 Worker 的写回整体回滚"
+      ]
+    }
+  ]
+}
