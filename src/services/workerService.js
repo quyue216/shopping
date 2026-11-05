@@ -122,7 +122,7 @@ function finalizeBusinessFailure(task, payment, reason) {
   });
 }
 
-/** 结果不明确（超时）：支付置 unknown，任务退避重试；下次领取先查询原交易，不重新扣款 */
+/** 结果不明确（超时）：支付置 unknown，任务退避重试；下次先查询，404 时用原幂等键补发 */
 function markUnknown(task, payment) {
   return withTaskWriteback(async (client) => {
     await updatePaymentResult(client, { id: payment.id, status: 'unknown' });
@@ -181,7 +181,7 @@ export async function processPaymentTask(task) {
     try {
       prev = await providerQuery({ idempotencyKey: payment.idempotency_key });
     } catch (err) {
-      // 平台服务不可达：不算任务失败，退避后重试
+      // 查询失败不能判断交易是否存在，退避重试，不补发支付
       return retryOrFail(task, `原交易结果查询失败: ${err.message}`);
     }
     if (prev?.status === 'succeeded') {
@@ -190,7 +190,13 @@ export async function processPaymentTask(task) {
     if (prev?.status === 'failed') {
       return finalizeBusinessFailure(task, payment, prev.reason || '支付失败');
     }
-    return retryOrFail(task, '原交易结果查询无果，稍后重试');
+    //! 平台返回 unknown 等非终态：可能已扣款，等待退避时间后重新查询，不直接补发支付。
+    //! 重试上限内等待平台明确结果；耗尽后仅将任务置 failed，支付仍待核实，需后续对账或人工核查。
+    if (prev !== null) {
+      return retryOrFail(task, '原交易结果尚未明确，稍后重试');
+    }
+    //! null 表示平台返回 404、未查到交易：继续下面的支付调用，复用原幂等键和金额补发。
+    //! 保留本地 unknown，直到拿到确定结果；同键并发或迟到请求由平台侧幂等去重。
   }
 
   // 已终态（可能由并发 Worker 完成）：仅收尾任务

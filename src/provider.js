@@ -9,6 +9,8 @@
  *     success（默认）正常成功
  *     fail     业务失败（如余额不足）
  *     timeout  平台已记账但响应丢失（直接销毁连接）→ 调用方看到网络错误，结果不明确
+ *     drop     请求在途丢失：每个幂等键的第一次请求直接销毁连接、不记账，
+ *              平台从没收到过 → 查询返回 404，调用方可安全补发
  * - PAYMENT_MOCK_LATENCY_MS: 模拟网络延迟，默认 100ms
  * - PAYMENT_PROVIDER_PORT: 监听端口，默认 4100
  */
@@ -55,6 +57,9 @@ async function insertLedger({ idempotencyKey, amount, status, providerTransactio
 const app = express();
 app.use(express.json());
 
+// drop 模式专用：记录已丢过请求的幂等键，每个键只丢第一次（重试正常处理）
+const droppedOnce = new Set();
+
 /** 发起支付。同幂等键重复请求直接返回首个结果（平台侧幂等）。 */
 app.post('/payments', async (req, res, next) => {
   try {
@@ -66,6 +71,12 @@ app.post('/payments', async (req, res, next) => {
       return res.status(400).json({ status: 'error', message: 'idempotencyKey 与 amount（正整数，单位：分）必填' });
     }
     await sleep(LATENCY_MS);
+
+    // 请求在途丢失：连接销毁在记账之前，平台侧不留任何痕迹
+    if (MODE === 'drop' && !droppedOnce.has(idempotencyKey)) {
+      droppedOnce.add(idempotencyKey);
+      return req.socket.destroy();
+    }
 
     const existing = await findByKey(idempotencyKey);
     if (existing) return res.json(existing);
