@@ -1,5 +1,27 @@
 /** 订单数据访问。所有函数接收 client，由 Service 层控制事务边界。 */
 
+/** 按 id 查订单及其明细；不存在返回 null */
+export async function findOrderWithItemsById(client, orderId) {
+  const { rows } = await client.query(
+    `SELECT id, user_id, total_amount, status, created_at
+       FROM orders
+      WHERE id = $1`,
+    [orderId],
+  );
+  if (rows.length === 0) return null;
+
+  const order = rows[0];
+  const { rows: items } = await client.query(
+    `SELECT product_id, product_name, unit_price, quantity
+       FROM order_items
+      WHERE order_id = $1
+      ORDER BY product_id`,
+    [order.id],
+  );
+  return { ...order, items };
+}
+
+
 /** 按幂等键查已有订单及其明细（幂等重放检查用） */
 export async function findOrderWithItemsByKey(client, userId, idempotencyKey) {
   const { rows } = await client.query(

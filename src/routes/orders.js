@@ -1,8 +1,22 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
-import { createOrder } from '../services/orderService.js';
+import { createOrder, getOrder } from '../services/orderService.js';
 
 const router = Router();
+
+/** 查询订单详情（含支付状态）；只能查自己的订单 */
+router.get('/orders/:id', requireAuth, async (req, res, next) => {
+  try {
+    const orderId = Number(req.params.id);
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({ status: 'error', message: '订单 ID 必须为正整数' });
+    }
+    const order = await getOrder({ userId: req.user.id, orderId });
+    res.status(200).json({ order });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /**
  * 下单。需登录（user_id 来自 JWT）。

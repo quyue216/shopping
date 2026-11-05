@@ -1,6 +1,7 @@
 import express from 'express';
 import healthRouter from './routes/health.js';
 import authRouter from './routes/auth.js';
+import productsRouter from './routes/products.js';
 import ordersRouter from './routes/orders.js';
 
 const app = express();
@@ -10,6 +11,7 @@ app.use(express.json());
 
 app.use(healthRouter);
 app.use(authRouter);
+app.use(productsRouter);
 app.use(ordersRouter);
 
 // eslint-disable-next-line no-unused-vars

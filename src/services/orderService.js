@@ -1,9 +1,39 @@
 import pool from '../db/pool.js';
 import { HttpError } from '../httpError.js';
 import { lockProductsByIds, decrementStock } from '../repositories/productRepository.js';
-import { findOrderWithItemsByKey, insertOrder, insertOrderItem } from '../repositories/orderRepository.js';
-import { insertPayment } from '../repositories/paymentRepository.js';
+import { findOrderWithItemsByKey, findOrderWithItemsById, insertOrder, insertOrderItem } from '../repositories/orderRepository.js';
+import { insertPayment, getPaymentByOrderId } from '../repositories/paymentRepository.js';
 import { insertTask } from '../repositories/paymentTaskRepository.js';
+
+/**
+ * 查询订单详情（含支付状态）。只允许查自己的订单：
+ * 不存在的订单与他人的订单一律返回 404，不泄露订单是否存在。
+ */
+export async function getOrder({ userId, orderId }) {
+  const order = await findOrderWithItemsById(pool, orderId);
+  if (!order || Number(order.user_id) !== Number(userId)) {
+    throw new HttpError(404, '订单不存在');
+  }
+  const payment = await getPaymentByOrderId(pool, orderId);
+  return {
+    orderId: Number(order.id),
+    status: order.status,
+    totalAmount: Number(order.total_amount),
+    items: order.items.map((i) => ({
+      productId: Number(i.product_id),
+      productName: i.product_name,
+      unitPrice: Number(i.unit_price),
+      quantity: Number(i.quantity),
+    })),
+    payment: payment && {
+      status: payment.status,
+      amount: Number(payment.amount),
+      providerTransactionId: payment.provider_transaction_id,
+    },
+    createdAt: order.created_at,
+  };
+}
+
 
 /** 请求参数校验：商品列表非空、数量为正整数；同商品多行合并 */
 function normalizeItems(items) {

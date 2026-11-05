@@ -1,5 +1,17 @@
 /** 支付数据访问。所有函数接收 client，由 Service 层控制事务边界。 */
 
+/** 按订单查支付记录（一个订单一条，005 起唯一）；不存在返回 null */
+export async function getPaymentByOrderId(client, orderId) {
+  const { rows } = await client.query(
+    `SELECT id, order_id, idempotency_key, amount, status, provider_transaction_id
+       FROM payments
+      WHERE order_id = $1`,
+    [orderId],
+  );
+  return rows[0] || null;
+}
+
+
 export async function insertPayment(client, { orderId, idempotencyKey, amount }) {
   const { rows } = await client.query(
     `INSERT INTO payments (order_id, idempotency_key, amount)
