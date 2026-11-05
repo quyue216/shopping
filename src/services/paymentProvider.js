@@ -1,58 +1,55 @@
 /**
- * 模拟第三方支付平台（进程内 Mock）。
- * - ledger 是平台侧账本：同一幂等键的重复调用返回首个结果，不会重复扣款
- * - PAYMENT_MOCK_MODE:
- *     success（默认）正常成功
- *     fail     业务失败（如余额不足）
- *     timeout  平台已处理成功但响应丢失 → 调用方看到超时，用于演练"结果不明确"恢复
- * - PAYMENT_MOCK_LATENCY_MS: 模拟网络延迟，默认 100ms
+ * 模拟支付平台客户端：通过 HTTP 调用独立部署的支付服务（src/provider.js）。
+ * - 平台服务独立进程运行，账本持久化在数据库，崩溃/重启不影响本进程
+ * - 网络错误 / 客户端超时 → PaymentTimeoutError（结果不明确：平台可能已扣款，须查询确认）
+ * - PAYMENT_PROVIDER_URL: 支付服务地址，默认 http://localhost:4100
+ * - PAYMENT_PROVIDER_TIMEOUT_MS: 客户端超时，默认 3000ms
  */
 
-const MODE = process.env.PAYMENT_MOCK_MODE || 'success';
-const LATENCY_MS = Number(process.env.PAYMENT_MOCK_LATENCY_MS) || 100;
-
-const ledger = new Map(); // idempotencyKey -> 交易结果
-let txnSeq = 0;
+const BASE_URL = process.env.PAYMENT_PROVIDER_URL || 'http://localhost:4100';
+const TIMEOUT_MS = Number(process.env.PAYMENT_PROVIDER_TIMEOUT_MS) || 3000;
 
 /** 网络超时错误：此时平台可能已扣款，结果不明确 */
 export class PaymentTimeoutError extends Error {
-  constructor() {
-    super('payment provider timeout');
+  constructor(message = 'payment provider timeout') {
+    super(message);
     this.code = 'PAYMENT_TIMEOUT';
   }
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** 统一发请求；网络层失败一律归为"结果不明确" */
+async function request(path, options = {}) {
+  try {
+    return await fetch(`${BASE_URL}${path}`, {
+      ...options,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch (err) {
+    // 连接拒绝、连接重置、客户端超时：都无法确定平台是否已处理，语义等同超时
+    throw new PaymentTimeoutError(`payment provider unreachable: ${err.message}`);
+  }
+}
 
-/** 发起支付。同幂等键重复调用直接返回首个结果（平台侧幂等）。 */
+/** 发起支付。同幂等键重复调用由平台侧返回首个结果（平台侧幂等）。 */
 export async function pay({ idempotencyKey, amount }) {
-  await sleep(LATENCY_MS);
-
-  const existing = ledger.get(idempotencyKey);
-  if (existing) return existing;
-
-  if (MODE === 'fail') {
-    const record = { status: 'failed', reason: '余额不足（模拟）', amount };
-    ledger.set(idempotencyKey, record);
-    return record;
+  const res = await request('/payments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idempotencyKey, amount }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(`payment provider error ${res.status}: ${body.message || res.statusText}`);
   }
-
-  const record = {
-    status: 'succeeded',
-    providerTransactionId: `txn_${Date.now()}_${++txnSeq}`,
-    amount,
-  };
-  ledger.set(idempotencyKey, record);
-
-  if (MODE === 'timeout') {
-    // 关键模拟：钱已扣（账本已记），但响应没回到调用方
-    throw new PaymentTimeoutError();
-  }
-  return record;
+  return res.json();
 }
 
 /** 按幂等键查询原交易结果；平台没有该交易时返回 null */
 export async function query({ idempotencyKey }) {
-  await sleep(LATENCY_MS);
-  return ledger.get(idempotencyKey) ?? null;
+  const res = await request(`/payments/${encodeURIComponent(idempotencyKey)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`payment provider error ${res.status}: ${res.statusText}`);
+  }
+  return res.json();
 }

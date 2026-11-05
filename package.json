@@ -9,6 +9,8 @@
     "dev": "node --watch src/index.js",
     "worker": "node src/worker.js",
     "worker:dev": "node --watch src/worker.js",
+    "provider": "node src/provider.js",
+    "provider:dev": "node --watch src/provider.js",
     "migrate": "node scripts/migrate.js"
   },
   "keywords": [],

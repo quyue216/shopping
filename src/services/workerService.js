@@ -128,7 +128,13 @@ export async function processPaymentTask(task) {
   // 结果不明确：先查询原交易结果，避免重复扣款
   if (payment.status === 'unknown') {
     //! 原交易结果查询
-    const prev = await provider.query({ idempotencyKey: payment.idempotency_key });
+    let prev;
+    try {
+      prev = await provider.query({ idempotencyKey: payment.idempotency_key });
+    } catch (err) {
+      // 平台服务不可达：不算任务失败，退避后重试
+      return retryOrFail(task, `原交易结果查询失败: ${err.message}`);
+    }
     if (prev?.status === 'succeeded') {
       return finalizeSuccess(task, payment, prev);
     }
