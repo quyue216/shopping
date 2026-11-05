@@ -1,5 +1,6 @@
 import pool from '../db/pool.js';
 import { HttpError } from '../httpError.js';
+import { MAX_CENTS } from '../utils/money.js';
 import { lockProductsByIds, decrementStock } from '../repositories/productRepository.js';
 import { findOrderWithItemsByKey, findOrderWithItemsById, insertOrder, insertOrderItem } from '../repositories/orderRepository.js';
 import { insertPayment, getPaymentByOrderId } from '../repositories/paymentRepository.js';
@@ -15,19 +16,20 @@ export async function getOrder({ userId, orderId }) {
     throw new HttpError(404, '订单不存在');
   }
   const payment = await getPaymentByOrderId(pool, orderId);
+  // 金额字段对外一律为十进制字符串（单位：分），见 utils/money.js
   return {
     orderId: Number(order.id),
     status: order.status,
-    totalAmount: Number(order.total_amount),
+    totalAmount: String(order.total_amount),
     items: order.items.map((i) => ({
       productId: Number(i.product_id),
       productName: i.product_name,
-      unitPrice: Number(i.unit_price),
+      unitPrice: String(i.unit_price),
       quantity: Number(i.quantity),
     })),
     payment: payment && {
       status: payment.status,
-      amount: Number(payment.amount),
+      amount: String(payment.amount),
       providerTransactionId: payment.provider_transaction_id,
     },
     createdAt: order.created_at,
@@ -114,7 +116,9 @@ export async function createOrder({ userId, idempotencyKey, items: rawItems }) {
       }
     }
 
-    let totalAmount = 0;
+    // 金额用 BigInt 累加：product.price 是 pg 返回的 BIGINT 字符串，
+    // 经 Number() 会在 2^53 以上丢精度
+    let totalAmount = 0n;
     for (const item of items) {
       const product = byId.get(item.productId);
       if (!product) {
@@ -123,16 +127,19 @@ export async function createOrder({ userId, idempotencyKey, items: rawItems }) {
       if (Number(product.stock) < item.quantity) {
         throw new HttpError(409, `商品「${product.name}」库存不足（剩余 ${product.stock}）`);
       }
-      totalAmount += Number(product.price) * item.quantity;
+      totalAmount += BigInt(product.price) * BigInt(item.quantity);
+    }
+    if (totalAmount > MAX_CENTS) {
+      throw new HttpError(400, '订单总金额超出 BIGINT 上限');
     }
     for (const item of items) {
       await decrementStock(client, item.productId, item.quantity);
     }
 
-    // 3. 订单 + 明细快照（名称、单价在下单时刻固化）
+    // 3. 订单 + 明细快照（名称、单价在下单时刻固化）；金额以字符串写库，不经 Number
     const order = await insertOrder(client, {
       userId,
-      totalAmount,
+      totalAmount: totalAmount.toString(),
       idempotencyKey: idempotencyKey.trim(),
     });
     for (const item of items) {
@@ -141,7 +148,7 @@ export async function createOrder({ userId, idempotencyKey, items: rawItems }) {
         orderId: order.id,
         productId: item.productId,
         productName: product.name,
-        unitPrice: product.price,
+        unitPrice: String(product.price),
         quantity: item.quantity,
       });
     }
@@ -150,7 +157,7 @@ export async function createOrder({ userId, idempotencyKey, items: rawItems }) {
     const payment = await insertPayment(client, {
       orderId: order.id,
       idempotencyKey: `pay-${order.id}`,
-      amount: totalAmount,
+      amount: totalAmount.toString(),
     });
 
     // 5. pending 支付任务，等待 Worker 领取

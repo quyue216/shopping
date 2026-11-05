@@ -167,10 +167,11 @@ export async function processPaymentTask(task) {
     }));
   }
 
-  const amount = Number(payment.amount);
+  // 金额保持 BigInt：payment.amount 是 BIGINT 字符串，Number() 会在 2^53 以上丢精度
+  const amount = BigInt(payment.amount);
 
   // 零元订单：跳过外部支付，直接完成
-  if (amount === 0) {
+  if (amount === 0n) {
     return finalizeSuccess(task, payment, { zeroAmount: true });
   }
 
@@ -211,7 +212,7 @@ export async function processPaymentTask(task) {
   try {
     const result = await providerPay({
       idempotencyKey: payment.idempotency_key,
-      amount,
+      amount: amount.toString(), // 平台 API 金额同样走十进制字符串
     });
     if (result.status === 'succeeded') {
       return finalizeSuccess(task, payment, result);

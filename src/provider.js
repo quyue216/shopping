@@ -17,6 +17,7 @@
 
 import express from 'express';
 import pool from './db/pool.js';
+import { parseCents } from './utils/money.js';
 
 const MODE = process.env.PAYMENT_MOCK_MODE || 'success';
 const LATENCY_MS = Number(process.env.PAYMENT_MOCK_LATENCY_MS) || 100;
@@ -24,9 +25,9 @@ const PORT = Number(process.env.PAYMENT_PROVIDER_PORT) || 4100;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** 账本行 → 交易结果对象（对外约定的字段名） */
+/** 账本行 → 交易结果对象（对外约定的字段名；金额为十进制字符串，单位：分） */
 function toResult(row) {
-  const result = { status: row.status, amount: Number(row.amount) };
+  const result = { status: row.status, amount: String(row.amount) };
   if (row.provider_transaction_id) result.providerTransactionId = row.provider_transaction_id;
   if (row.reason) result.reason = row.reason;
   return result;
@@ -64,11 +65,18 @@ const droppedOnce = new Set();
 app.post('/payments', async (req, res, next) => {
   try {
     const { idempotencyKey, amount } = req.body ?? {};
-    if (
-      typeof idempotencyKey !== 'string' || idempotencyKey.trim() === '' ||
-      !Number.isInteger(amount) || amount <= 0
-    ) {
-      return res.status(400).json({ status: 'error', message: 'idempotencyKey 与 amount（正整数，单位：分）必填' });
+    if (typeof idempotencyKey !== 'string' || idempotencyKey.trim() === '') {
+      return res.status(400).json({ status: 'error', message: 'idempotencyKey 必填' });
+    }
+    // amount 接受安全整数或十进制字符串（大金额必须用字符串，JSON number 会丢精度）
+    let amountCents;
+    try {
+      amountCents = parseCents(amount, 'amount');
+    } catch (err) {
+      return res.status(400).json({ status: 'error', message: err.message });
+    }
+    if (amountCents === 0n) {
+      return res.status(400).json({ status: 'error', message: 'amount 必须为正整数（单位：分）' });
     }
     await sleep(LATENCY_MS);
 
@@ -82,14 +90,14 @@ app.post('/payments', async (req, res, next) => {
     if (existing) return res.json(existing);
 
     if (MODE === 'fail') {
-      const record = await insertLedger({ idempotencyKey, amount, status: 'failed', reason: '余额不足（模拟）' });
+      const record = await insertLedger({ idempotencyKey, amount: amountCents.toString(), status: 'failed', reason: '余额不足（模拟）' });
       return res.json(record);
     }
 
     const { rows } = await pool.query(`SELECT 'txn_' || nextval('payment_provider_txn_seq') AS txn_id`);
     const record = await insertLedger({
       idempotencyKey,
-      amount,
+      amount: amountCents.toString(),
       status: 'succeeded',
       providerTransactionId: rows[0].txn_id,
     });

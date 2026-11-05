@@ -37,15 +37,22 @@ test('商品接口：创建需登录，列表与详情公开可查', async () =>
   const noAuth = await postProduct({ token: null, name: '机械键盘', price: 29900, stock: 50 });
   assert.equal(noAuth.status, 401);
 
-  // 参数校验：空名称 / 负价格 → 400
+  // 参数校验：空名称 / 负价格 / 小数价格 / 超 BIGINT 上限 → 400
   assert.equal((await postProduct({ token, name: '', price: 100, stock: 1 })).status, 400);
   assert.equal((await postProduct({ token, name: 'x', price: -1, stock: 1 })).status, 400);
+  assert.equal((await postProduct({ token, name: 'x', price: 1.5, stock: 1 })).status, 400);
+  assert.equal((await postProduct({ token, name: 'x', price: '9223372036854775808', stock: 1 })).status, 400);
 
-  // 正常创建 → 201
+  // 正常创建 → 201；金额为十进制字符串
   const created = await postProduct({ token, name: '机械键盘', price: 29900, stock: 50 });
   assert.equal(created.status, 201);
   assert.equal(created.body.product.name, '机械键盘');
-  assert.equal(created.body.product.price, 29900);
+  assert.equal(created.body.product.price, '29900');
+
+  // 超过 2^53 的价格必须用字符串传参，且响应原样返回不丢精度
+  const big = await postProduct({ token, name: '天价商品', price: '9007199254740993', stock: 1 });
+  assert.equal(big.status, 201);
+  assert.equal(big.body.product.price, '9007199254740993');
 
   // 列表包含新商品；详情可查；不存在 → 404
   const list = await getProducts();
@@ -75,7 +82,7 @@ test('订单查询：客户端可追踪到最终支付状态', { timeout: 20000 
   const early = await getOrderById({ token, orderId });
   assert.equal(early.status, 200);
   assert.equal(early.body.order.status, 'pending');
-  assert.equal(early.body.order.totalAmount, 2000);
+  assert.equal(early.body.order.totalAmount, '2000');
   assert.equal(early.body.order.items.length, 1);
   assert.equal(early.body.order.items[0].quantity, 2);
   assert.equal(early.body.order.payment.status, 'pending');
@@ -86,6 +93,33 @@ test('订单查询：客户端可追踪到最终支付状态', { timeout: 20000 
   assert.equal(done.body.order.status, 'paid');
   assert.equal(done.body.order.payment.status, 'succeeded');
   assert.ok(done.body.order.payment.providerTransactionId, '应返回平台交易编号');
+});
+
+test('金额精度：超过 2^53 的金额下单、支付、查询全程不丢精度', { timeout: 20000 }, async () => {
+  const userId = await createUser();
+  const token = signToken(userId);
+
+  // 2^53 + 1：Number 无法精确表示，必须走字符串/BigInt 链路
+  const created = await postProduct({ token, name: '天价商品', price: '9007199254740993', stock: 5 });
+  assert.equal(created.status, 201);
+  const productId = created.body.product.productId;
+
+  const res = await postOrder({
+    token,
+    idempotencyKey: 'k-bigint',
+    items: [{ productId, quantity: 2 }],
+  });
+  assert.equal(res.status, 201);
+  // 9007199254740993 * 2 = 18014398509481986，分毫不差
+  assert.equal(res.body.totalAmount, '18014398509481986');
+
+  await waitFor(async () => (await getOrder(res.body.orderId))?.status === 'paid', { message: '订单 paid' });
+
+  const done = await getOrderById({ token, orderId: res.body.orderId });
+  assert.equal(done.body.order.totalAmount, '18014398509481986');
+  assert.equal(done.body.order.items[0].unitPrice, '9007199254740993');
+  assert.equal(done.body.order.payment.status, 'succeeded');
+  assert.equal(done.body.order.payment.amount, '18014398509481986');
 });
 
 test('订单查询权限：他人订单与不存在订单一律 404，未登录 401', async () => {

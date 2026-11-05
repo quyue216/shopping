@@ -31,7 +31,7 @@ router.post('/orders', requireAuth, async (req, res, next) => {
     const body = {
       orderId: Number(result.order.id),
       status: result.order.status,
-      totalAmount: Number(result.order.total_amount),
+      totalAmount: String(result.order.total_amount), // 金额为十进制字符串（单位：分）
       replayed: result.replayed,
     };
     res.status(result.replayed ? 200 : 201).json(body);

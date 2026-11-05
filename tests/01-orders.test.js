@@ -39,7 +39,7 @@ test('正常下单：订单、库存、支付记录正确', { timeout: 20000 }, 
     items: [{ productId, quantity: 2 }],
   });
   assert.equal(res.status, 201);
-  assert.equal(res.body.totalAmount, 2000);
+  assert.equal(res.body.totalAmount, '2000'); // 金额为十进制字符串（单位：分）
   assert.equal(res.body.replayed, false);
 
   // 下单事务内已预留库存
@@ -57,7 +57,7 @@ test('正常下单：订单、库存、支付记录正确', { timeout: 20000 }, 
   const ledger = await getLedgerByKey(payment.idempotency_key);
   assert.equal(ledger.length, 1);
   assert.equal(ledger[0].provider_transaction_id, payment.provider_transaction_id);
-  assert.equal(Number(ledger[0].amount), 2000);
+  assert.equal(ledger[0].amount, '2000'); // BIGINT 读出为字符串，比对不丢精度
 
   const { rows: [task] } = await getPool()
     .query('SELECT * FROM payment_tasks WHERE payment_id = $1', [payment.id]);

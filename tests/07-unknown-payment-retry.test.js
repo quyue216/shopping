@@ -39,7 +39,7 @@ test('unknown 查询 404：用原幂等键和金额补发，支付与订单成�
   assert.ok(requests[1].url.endsWith('/payments'));
   assert.equal(requests[1].options.method, 'POST');
   assert.deepEqual(JSON.parse(requests[1].options.body), {
-    idempotencyKey: `pay-${orderId}`, amount: 300,
+    idempotencyKey: `pay-${orderId}`, amount: '300', // 金额走十进制字符串，不丢精度
   });
   const payment = await getPayment(paymentId);
   assert.equal(payment.status, 'succeeded');
