@@ -3,12 +3,61 @@ import { claimNextTask, finishTask, rescheduleTask } from '../repositories/payme
 import { getPaymentById, updatePaymentResult } from '../repositories/paymentRepository.js';
 import { markOrderPaid, cancelOrder, getOrderItems } from '../repositories/orderRepository.js';
 import { increaseStock } from '../repositories/productRepository.js';
-import * as provider from './paymentProvider.js';
 
 // 租约时长：Worker 必须在此时间内写回结果，超时任务可被其他 Worker 回收
 const LEASE_SECONDS = Number(process.env.WORKER_LEASE_SECONDS) || 30;
 // 最大尝试次数，超过后任务置 failed，不再重试（进入人工排查）
 const MAX_ATTEMPTS = Number(process.env.WORKER_MAX_ATTEMPTS) || 5;
+
+// ---- 外部支付平台（独立服务 src/provider.js）的 HTTP 调用 ----
+// Worker 与支付平台之间只有网络边界：平台崩溃/重启不影响本进程，
+// 网络层失败一律视为"结果不明确"，按超时路径处理（可能已扣款，须查询确认）
+const PAYMENT_PROVIDER_URL = process.env.PAYMENT_PROVIDER_URL || 'http://localhost:4100';
+const PAYMENT_PROVIDER_TIMEOUT_MS = Number(process.env.PAYMENT_PROVIDER_TIMEOUT_MS) || 3000;
+
+/** 网络超时错误：此时平台可能已扣款，结果不明确 */
+export class PaymentTimeoutError extends Error {
+  constructor(message = 'payment provider timeout') {
+    super(message);
+    this.code = 'PAYMENT_TIMEOUT';
+  }
+}
+
+/** 统一发请求；连接拒绝/重置/客户端超时都归为"结果不明确" */
+async function providerRequest(path, options = {}) {
+  try {
+    return await fetch(`${PAYMENT_PROVIDER_URL}${path}`, {
+      ...options,
+      signal: AbortSignal.timeout(PAYMENT_PROVIDER_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new PaymentTimeoutError(`payment provider unreachable: ${err.message}`);
+  }
+}
+
+/** 发起支付。同幂等键重复调用由平台侧返回首个结果（平台侧幂等）。 */
+async function providerPay({ idempotencyKey, amount }) {
+  const res = await providerRequest('/payments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idempotencyKey, amount }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(`payment provider error ${res.status}: ${body.message || res.statusText}`);
+  }
+  return res.json();
+}
+
+/** 按幂等键查询原交易结果；平台没有该交易时返回 null */
+async function providerQuery({ idempotencyKey }) {
+  const res = await providerRequest(`/payments/${encodeURIComponent(idempotencyKey)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`payment provider error ${res.status}: ${res.statusText}`);
+  }
+  return res.json();
+}
 
 /** 领取一个待处理任务；没有可领取任务时返回 null */
 export async function claimNext() {
@@ -130,7 +179,7 @@ export async function processPaymentTask(task) {
     //! 原交易结果查询
     let prev;
     try {
-      prev = await provider.query({ idempotencyKey: payment.idempotency_key });
+      prev = await providerQuery({ idempotencyKey: payment.idempotency_key });
     } catch (err) {
       // 平台服务不可达：不算任务失败，退避后重试
       return retryOrFail(task, `原交易结果查询失败: ${err.message}`);
@@ -154,7 +203,7 @@ export async function processPaymentTask(task) {
 
   // 正常发起支付；稳定幂等键随支付记录复用，重领/重启后不变
   try {
-    const result = await provider.pay({
+    const result = await providerPay({
       idempotencyKey: payment.idempotency_key,
       amount,
     });
@@ -163,7 +212,7 @@ export async function processPaymentTask(task) {
     }
     return finalizeBusinessFailure(task, payment, result.reason || '支付失败');
   } catch (err) {
-    if (err instanceof provider.PaymentTimeoutError) {
+    if (err instanceof PaymentTimeoutError) {
       return markUnknown(task, payment);
     }
     return retryOrFail(task, `支付调用异常: ${err.message}`);
