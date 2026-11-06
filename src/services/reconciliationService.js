@@ -108,18 +108,9 @@ async function applyConfirmedResult({ taskContext, providerResult, operator }) {
     );
     const order = orderRows[0];
 
-    const { rows: taskRows } = await client.query(
-      'SELECT id, payment_id, status, version, last_error\n' +
-      '  FROM payment_tasks WHERE id = $1 FOR UPDATE',
-      [taskContext.task_id],
-    );
-    const task = taskRows[0];
-
-    if (!order || !task || task.status !== 'failed' ||
-        String(task.payment_id) !== String(payment.id) ||
-        String(task.version) !== String(taskContext.version)) {
+    if (!order) {
       await client.query('ROLLBACK');
-      return { outcome: 'conflict', message: '任务状态或版本已变化，未执行修复；请重新查询死信任务' };
+      return { outcome: 'conflict', message: '关联订单已不存在，未执行修复' };
     }
 
     if (payment.idempotency_key !== taskContext.idempotency_key ||
@@ -205,6 +196,20 @@ async function applyConfirmedResult({ taskContext, providerResult, operator }) {
       action = 'payment_failed';
     }
 
+    // 与 Worker 的写回顺序一致：商品锁释放前，最后再锁任务行。
+    const { rows: taskRows } = await client.query(
+      'SELECT id, payment_id, status, version, last_error\n' +
+      '  FROM payment_tasks WHERE id = $1 FOR UPDATE',
+      [taskContext.task_id],
+    );
+    const task = taskRows[0];
+    if (!task || task.status !== 'failed' ||
+        String(task.payment_id) !== String(payment.id) ||
+        String(task.version) !== String(taskContext.version)) {
+      await client.query('ROLLBACK');
+      return { outcome: 'conflict', message: '任务状态或版本已变化，未执行修复；请重新查询死信任务' };
+    }
+
     const writeback = await finishTask(client, {
       taskId: task.id,
       version: task.version,
@@ -224,7 +229,7 @@ async function applyConfirmedResult({ taskContext, providerResult, operator }) {
       providerStatus: providerResult.status,
       providerAmount: providerResult.amount,
       providerTransactionId: providerResult.providerTransactionId || null,
-      providerReason: providerResult.reason || null,
+      providerReason: typeof providerResult.reason === 'string' ? providerResult.reason : null,
       taskLastError: task.last_error,
     });
 

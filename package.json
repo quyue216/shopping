@@ -14,7 +14,8 @@
     "migrate": "node scripts/migrate.js",
     "seed": "node scripts/seed.js",
     "test": "node --test --test-concurrency=1 \"tests/**/*.test.js\"",
-    "tasks:dead-letter": "node scripts/list-dead-letter-tasks.js"
+    "tasks:dead-letter": "node scripts/list-dead-letter-tasks.js",
+    "tasks:reconcile": "node scripts/reconcile-dead-letter-task.js"
   },
   "keywords": [],
   "author": "",
