@@ -40,18 +40,58 @@ export async function claimNextTask(client, leaseSeconds) {
 }
 
 /**
- * 写回完成（completed/failed）。必须匹配领取时的 version：
- * 不匹配说明租约已过期、任务被其他 Worker 回收重领，本次写回被拒绝（返回 null）。
+ * 写回完成（completed/failed）。failed 表示进入死信队列。
+ * 必须匹配领取时的 version，拒绝已过期 Worker 的旧写回。
  */
-export async function finishTask(client, { taskId, version, status }) {
+export async function finishTask(client, { taskId, version, status, lastError = null }) {
   const { rows } = await client.query(
     `UPDATE payment_tasks
-        SET status = $3, lease_until = NULL
+        SET status = $3,
+            lease_until = NULL,
+            last_error = CASE
+              WHEN $3 = 'failed' THEN COALESCE($4, last_error)
+              WHEN $3 = 'completed' THEN NULL
+              ELSE last_error
+            END
       WHERE id = $1 AND version = $2
       RETURNING id`,
-    [taskId, version, status],
+    [taskId, version, status, lastError],
   );
   return rows[0] || null;
+}
+
+/**
+ * 查询死信任务（status=failed）及其支付、订单上下文。
+ * 只读查询，不会自动重试未知支付，避免在未核实第三方账本前重复触发资金操作。
+ */
+export async function listDeadLetterTasks(client, { limit = 50 } = {}) {
+  const safeLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 50, 1), 200);
+  const { rows } = await client.query(
+    `SELECT
+        pt.id AS task_id,
+        pt.event_type,
+        pt.attempts,
+        pt.version,
+        pt.last_error,
+        pt.created_at AS task_created_at,
+        pt.updated_at AS dead_lettered_at,
+        p.id AS payment_id,
+        p.idempotency_key,
+        p.amount::text AS payment_amount,
+        p.status AS payment_status,
+        p.provider_transaction_id,
+        o.id AS order_id,
+        o.status AS order_status,
+        o.total_amount::text AS order_amount
+       FROM payment_tasks pt
+       LEFT JOIN payments p ON p.id = pt.payment_id
+       LEFT JOIN orders o ON o.id = p.order_id
+      WHERE pt.status = 'failed'
+      ORDER BY pt.updated_at ASC, pt.id ASC
+      LIMIT $1`,
+    [safeLimit],
+  );
+  return rows;
 }
 
 /** 写回失败重试：退回 pending，按退避时间推迟 available_at，记录失败原因。同样校验 version。 */
