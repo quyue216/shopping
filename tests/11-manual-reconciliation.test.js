@@ -104,17 +104,30 @@ test('apply：第三方确认失败后取消订单并只回补一次预留库存
     reason: '余额不足（模拟）',
   });
 
-  const result = await reconcileDeadLetterTask({
-    taskId: String(fixture.taskId),
-    apply: true,
-    operator: 'test-operator',
-  });
-  assert.equal(result.outcome, 'applied_failure');
-  assert.equal(result.inventoryItemsRestored, 1);
+  const results = await Promise.all([
+    reconcileDeadLetterTask({
+      taskId: String(fixture.taskId),
+      apply: true,
+      operator: 'operator-a',
+    }),
+    reconcileDeadLetterTask({
+      taskId: String(fixture.taskId),
+      apply: true,
+      operator: 'operator-b',
+    }),
+  ]);
+  assert.equal(results.filter((result) => result.outcome === 'applied_failure').length, 1);
+  assert.equal(results.filter((result) => result.outcome === 'conflict').length, 1);
+  assert.equal(results.find((result) => result.outcome === 'applied_failure').inventoryItemsRestored, 1);
   assert.equal((await getPayment(fixture.paymentId)).status, 'failed');
   assert.equal((await getOrder(fixture.orderId)).status, 'cancelled');
   assert.equal((await getTask(fixture.taskId)).status, 'completed');
   assert.equal(await getStock(productId), 10);
+  const { rows } = await getPool().query(
+    'SELECT count(*)::int AS count FROM payment_reconciliation_logs WHERE task_id = $1',
+    [fixture.taskId],
+  );
+  assert.equal(rows[0].count, 1);
 });
 
 test('第三方 404：不补发支付，不修改本地数据', async (t) => {
