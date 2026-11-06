@@ -22,6 +22,11 @@ after(async () => {
 test('达到最大尝试次数：任务进入死信队列并保存最终失败原因', async (t) => {
   const failedFixture = await createOrderFixture({ amount: 500 });
   const untouchedFixture = await createOrderFixture({ amount: 700 });
+  // 明确推迟第二条任务，避免 available_at 相同导致领取顺序不确定。
+  await getPool().query(
+    "UPDATE payment_tasks SET available_at = now() + interval '1 hour' WHERE id = $1",
+    [untouchedFixture.taskId],
+  );
   const task = await claimNext();
   assert.equal(Number(task.id), failedFixture.taskId);
   assert.equal(task.attempts, 1);
