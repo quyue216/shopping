@@ -141,8 +141,14 @@ function markUnknown(task, payment, reason = '支付结果不明确（超时）'
 function retryOrFail(task, reason) {
   return withTaskWriteback(async (client) => {
     if (task.attempts >= MAX_ATTEMPTS) {
-      const writeback = await finishTask(client, { taskId: task.id, version: task.version, status: 'failed' });
-      return { outcome: 'failed', reason: `超过最大尝试次数: ${reason}`, writeback };
+      const finalReason = `超过最大尝试次数: ${reason}`;
+      const writeback = await finishTask(client, {
+        taskId: task.id,
+        version: task.version,
+        status: 'failed',
+        lastError: finalReason,
+      });
+      return { outcome: 'failed', reason: finalReason, writeback };
     }
     const writeback = await rescheduleTask(client, {
       taskId: task.id,
@@ -161,10 +167,16 @@ function retryOrFail(task, reason) {
 export async function processPaymentTask(task) {
   const payment = await getPaymentById(pool, task.payment_id);
   if (!payment) {
+    const reason = `支付记录 ${task.payment_id} 不存在`;
     return withTaskWriteback(async (client) => ({
       outcome: 'failed',
-      reason: `支付记录 ${task.payment_id} 不存在`,
-      writeback: await finishTask(client, { taskId: task.id, version: task.version, status: 'failed' }),
+      reason,
+      writeback: await finishTask(client, {
+        taskId: task.id,
+        version: task.version,
+        status: 'failed',
+        lastError: reason,
+      }),
     }));
   }
 
