@@ -5,6 +5,7 @@ function usage() {
   console.log('用法：');
   console.log('  npm run tasks:reconcile -- <任务ID>                 # 只查询并预览，不修改数据');
   console.log('  npm run tasks:reconcile -- <任务ID> --apply         # 核实第三方终态后修复本地数据');
+  console.log('  npm run tasks:reconcile -- <任务ID> --requeue-if-not-found      # 预览查无交易后的重新排队');
   console.log('  npm run tasks:reconcile -- <任务ID> --requeue-if-not-found --apply');
   console.log('  npm run tasks:reconcile -- <任务ID> --apply --operator=姓名');
 }

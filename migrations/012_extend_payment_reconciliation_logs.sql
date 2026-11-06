@@ -32,3 +32,10 @@ CREATE INDEX idx_payment_reconciliation_logs_task_created
 
 COMMENT ON COLUMN payment_reconciliation_logs.task_attempts_before IS
     '人工操作前任务已尝试次数；重新排队会将任务 attempts 重置为 0';
+
+COMMENT ON TABLE payment_reconciliation_logs IS
+    '人工对账审计表；记录第三方终态修复，以及确认无交易后的人工重新排队';
+COMMENT ON COLUMN payment_reconciliation_logs.task_id IS
+    '被人工对账处理的死信任务；同一任务可保留多次人工处理历史';
+COMMENT ON COLUMN payment_reconciliation_logs.action IS
+    'payment_succeeded 支付成功修复；payment_failed 支付失败修复；task_requeued 查无交易后重新排队';
