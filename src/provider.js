@@ -18,6 +18,7 @@
 import express from 'express';
 import pool from './db/pool.js';
 import { parseCents } from './utils/money.js';
+import { HttpError } from './httpError.js';
 
 const MODE = process.env.PAYMENT_MOCK_MODE || 'success';
 const LATENCY_MS = Number(process.env.PAYMENT_MOCK_LATENCY_MS) || 100;
@@ -42,7 +43,14 @@ async function findByKey(idempotencyKey) {
   return rows.length > 0 ? toResult(rows[0]) : null;
 }
 
-/** 记一笔账；同键已被其他请求先记时回查并返回首个结果（平台侧幂等） */
+/** 同一幂等键必须对应相同金额；使用 BigInt 比较，避免大金额丢精度。 */
+function assertSameAmount(record, amountCents) {
+  if (BigInt(record.amount) !== amountCents) {
+    throw new HttpError(409, '幂等键对应的金额不一致');
+  }
+}
+
+/** 记一笔账；并发同键冲突后回查，金额一致才返回首个结果（平台侧幂等） */
 async function insertLedger({ idempotencyKey, amount, status, providerTransactionId = null, reason = null }) {
   const { rows } = await pool.query(
     `INSERT INTO payment_provider_ledger (idempotency_key, amount, status, provider_transaction_id, reason)
@@ -52,7 +60,11 @@ async function insertLedger({ idempotencyKey, amount, status, providerTransactio
     [idempotencyKey, amount, status, providerTransactionId, reason]
   );
   if (rows.length > 0) return toResult(rows[0]);
-  return findByKey(idempotencyKey);
+  const existing = await findByKey(idempotencyKey);
+  if (!existing) throw new Error('幂等冲突后未找到原交易');
+  //! 两个请求可能同时查不到记录：唯一约束阻止重复记账，回查后仍须核对金额。
+  assertSameAmount(existing, BigInt(amount));
+  return existing;
 }
 
 const app = express();
@@ -87,7 +99,10 @@ app.post('/payments', async (req, res, next) => {
     }
 
     const existing = await findByKey(idempotencyKey);
-    if (existing) return res.json(existing);
+    if (existing) {
+      assertSameAmount(existing, amountCents);
+      return res.json(existing);
+    }
 
     if (MODE === 'fail') {
       const record = await insertLedger({ idempotencyKey, amount: amountCents.toString(), status: 'failed', reason: '余额不足（模拟）' });
@@ -126,6 +141,9 @@ app.get('/payments/:idempotencyKey', async (req, res, next) => {
 
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
+  if (err instanceof HttpError) {
+    return res.status(err.status).json({ status: 'error', message: err.message });
+  }
   console.error('[payment-provider] error:', err);
   res.status(500).json({ status: 'error', message: 'Internal server error' });
 });

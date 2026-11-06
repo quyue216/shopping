@@ -28,12 +28,16 @@ after(async () => {
 
 beforeEach(() => resetDb());
 
-async function providerPay(idempotencyKey, amount = 100) {
-  const res = await fetch(`${PROVIDER_URL}/payments`, {
+async function requestPayment(idempotencyKey, amount = 100) {
+  return fetch(`${PROVIDER_URL}/payments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ idempotencyKey, amount }),
   });
+}
+
+async function providerPay(idempotencyKey, amount = 100) {
+  const res = await requestPayment(idempotencyKey, amount);
   assert.equal(res.status, 200);
   return res.json();
 }
@@ -54,6 +58,65 @@ test('平台幂等：同键串行 + 并发请求，账本只有一笔', async ()
   assert.equal(txnIds.size, 1, '并发同键只能产生一个交易编号');
 
   assert.equal(await countRows('payment_provider_ledger'), 2, '两个幂等键各一笔账');
+});
+
+test('平台幂等：同键同金额兼容数字和字符串，不同金额返回 409 且原账本不变', async () => {
+  const key = 'plat-amount-serial';
+  const first = await providerPay(key, '10000');
+  const replay = await providerPay(key, 10000);
+  assert.deepEqual(replay, first);
+
+  const conflict = await requestPayment(key, '20000');
+  assert.equal(conflict.status, 409);
+  assert.deepEqual(await conflict.json(), { status: 'error', message: '幂等键对应的金额不一致' });
+  const ledger = await getLedgerByKey(key);
+  assert.equal(ledger.length, 1);
+  assert.equal(ledger[0].amount, '10000');
+  assert.equal(ledger[0].provider_transaction_id, first.providerTransactionId);
+});
+
+test('平台幂等：超过安全整数范围的金额相差 1 分也返回 409', async () => {
+  const key = 'plat-amount-bigint';
+  const first = await providerPay(key, '9007199254740992');
+  const conflict = await requestPayment(key, '9007199254740993');
+  assert.equal(conflict.status, 409);
+  assert.equal((await conflict.json()).message, '幂等键对应的金额不一致');
+  assert.deepEqual(await providerPay(key, '9007199254740992'), first);
+  assert.equal((await getLedgerByKey(key))[0].amount, '9007199254740992');
+});
+
+test('平台幂等：并发同键不同金额，ON CONFLICT 回查也必须返回 409', { timeout: 15000 }, async () => {
+  const key = 'plat-amount-race';
+  const amounts = ['10000', '20000'];
+  const blocker = await getPool().connect();
+  let requests;
+  try {
+    await blocker.query('BEGIN');
+    // 允许最初的 SELECT，阻塞 INSERT，使两个请求都先查不到记录，确定覆盖冲突回查路径。
+    await blocker.query('LOCK TABLE payment_provider_ledger IN SHARE MODE');
+    requests = Promise.all(amounts.map((amount) => requestPayment(key, amount)));
+    await waitFor(async () => {
+      const { rows: [sequence] } = await getPool().query('SELECT last_value, is_called FROM payment_provider_txn_seq');
+      return sequence.is_called && BigInt(sequence.last_value) >= 2n;
+    }, { message: '两个请求都通过初次查重并申请交易编号' });
+  } finally {
+    await blocker.query('ROLLBACK');
+    blocker.release();
+    // 即使等待失败也回收已经发出的 HTTP 请求。
+    if (requests) await requests;
+  }
+
+  const responses = await requests;
+  assert.deepEqual(responses.map((res) => res.status).sort(), [200, 409]);
+  const winner = responses.findIndex((res) => res.status === 200);
+  const result = await responses[winner].json();
+  const conflict = await responses[1 - winner].json();
+  assert.equal(result.amount, amounts[winner]);
+  assert.deepEqual(conflict, { status: 'error', message: '幂等键对应的金额不一致' });
+  const ledger = await getLedgerByKey(key);
+  assert.equal(ledger.length, 1);
+  assert.equal(ledger[0].amount, amounts[winner]);
+  assert.equal(ledger[0].provider_transaction_id, result.providerTransactionId);
 });
 
 test('Worker 幂等收尾：任务重复投递不会重复扣款', { timeout: 15000 }, async () => {
