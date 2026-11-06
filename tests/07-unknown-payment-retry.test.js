@@ -30,7 +30,7 @@ test('unknown 查询 404：用原幂等键和金额补发，支付与订单成�
     if (requests.length === 1) {
       return Response.json({ status: 'not_found' }, { status: 404 });
     }
-    return Response.json({ status: 'succeeded', providerTransactionId: 'txn-retry-404' });
+    return Response.json({ status: 'succeeded', amount: '300', providerTransactionId: 'txn-retry-404' });
   });
 
   assert.equal((await processPaymentTask(task)).outcome, 'succeeded');
@@ -85,4 +85,70 @@ test('unknown 查询 404 后补发超时：保留 unknown、订单待支付，�
   const savedTask = await getTask(taskId);
   assert.equal(savedTask.status, 'pending');
   assert.match(savedTask.last_error, /结果不明确/);
+});
+
+
+test('首次支付成功响应金额不一致：订单不能标记为 paid', async (t) => {
+  const { paymentId, orderId, taskId } = await createOrderFixture({ amount: 300 });
+  const task = await claimNext();
+  t.mock.method(globalThis, 'fetch', async () =>
+    Response.json({ status: 'succeeded', amount: '301', providerTransactionId: 'txn-wrong-amount' }));
+
+  assert.equal((await processPaymentTask(task)).outcome, 'unknown');
+  assert.equal((await getPayment(paymentId)).status, 'unknown');
+  assert.equal((await getPayment(paymentId)).provider_transaction_id, null);
+  assert.equal((await getOrder(orderId)).status, 'pending');
+  const savedTask = await getTask(taskId);
+  assert.equal(savedTask.status, 'pending');
+  assert.match(savedTask.last_error, /金额不一致/);
+});
+
+test('首次支付失败响应金额不一致：不得取消订单或回补库存', async (t) => {
+  const { paymentId, orderId, taskId } = await createOrderFixture({ amount: 300 });
+  const task = await claimNext();
+  t.mock.method(globalThis, 'fetch', async () =>
+    Response.json({ status: 'failed', amount: '299', reason: '余额不足' }));
+
+  assert.equal((await processPaymentTask(task)).outcome, 'unknown');
+  assert.equal((await getPayment(paymentId)).status, 'unknown');
+  assert.equal((await getOrder(orderId)).status, 'pending');
+  assert.equal((await getTask(taskId)).status, 'pending');
+});
+
+test('原交易查询金额不一致：保留 unknown、只退避，不补发支付', async (t) => {
+  const { paymentId, orderId, taskId, task } = await claimUnknownPayment();
+  const mockFetch = t.mock.method(globalThis, 'fetch', async () =>
+    Response.json({ status: 'succeeded', amount: '999', providerTransactionId: 'txn-query-wrong' }));
+
+  assert.equal((await processPaymentTask(task)).outcome, 'retry');
+  assert.equal(mockFetch.mock.callCount(), 1);
+  assert.equal((await getPayment(paymentId)).status, 'unknown');
+  assert.equal((await getOrder(orderId)).status, 'pending');
+  const savedTask = await getTask(taskId);
+  assert.equal(savedTask.status, 'pending');
+  assert.match(savedTask.last_error, /金额不一致/);
+});
+
+test('平台终态响应金额缺失：不能确认订单状态', async (t) => {
+  const { paymentId, orderId, taskId } = await createOrderFixture({ amount: 300 });
+  const task = await claimNext();
+  t.mock.method(globalThis, 'fetch', async () =>
+    Response.json({ status: 'succeeded', providerTransactionId: 'txn-no-amount' }));
+
+  assert.equal((await processPaymentTask(task)).outcome, 'unknown');
+  assert.equal((await getPayment(paymentId)).status, 'unknown');
+  assert.equal((await getOrder(orderId)).status, 'pending');
+  assert.match((await getTask(taskId)).last_error, /金额缺失或格式错误/);
+});
+
+test('平台未给出明确终态：不能误判为支付失败', async (t) => {
+  const { paymentId, orderId, taskId } = await createOrderFixture({ amount: 300 });
+  const task = await claimNext();
+  t.mock.method(globalThis, 'fetch', async () =>
+    Response.json({ status: 'processing', amount: '300' }));
+
+  assert.equal((await processPaymentTask(task)).outcome, 'unknown');
+  assert.equal((await getPayment(paymentId)).status, 'unknown');
+  assert.equal((await getOrder(orderId)).status, 'pending');
+  assert.equal((await getTask(taskId)).status, 'pending');
 });

@@ -3,6 +3,7 @@ import { claimNextTask, finishTask, rescheduleTask } from '../repositories/payme
 import { getPaymentById, updatePaymentResult } from '../repositories/paymentRepository.js';
 import { markOrderPaid, cancelOrder, getOrderItems } from '../repositories/orderRepository.js';
 import { increaseStock } from '../repositories/productRepository.js';
+import { validateProviderFinalAmount } from '../utils/providerResult.js';
 
 // 租约时长：Worker 必须在此时间内写回结果，超时任务可被其他 Worker 回收
 const LEASE_SECONDS = Number(process.env.WORKER_LEASE_SECONDS) || 30;
@@ -123,14 +124,14 @@ function finalizeBusinessFailure(task, payment, reason) {
 }
 
 /** 结果不明确（超时）：支付置 unknown，任务退避重试；下次先查询，404 时用原幂等键补发 */
-function markUnknown(task, payment) {
+function markUnknown(task, payment, reason = '支付结果不明确（超时）') {
   return withTaskWriteback(async (client) => {
     await updatePaymentResult(client, { id: payment.id, status: 'unknown' });
     const writeback = await rescheduleTask(client, {
       taskId: task.id,
       version: task.version,
       delaySeconds: backoffSeconds(task.attempts),
-      lastError: '支付结果不明确（超时），下次先查询原交易',
+      lastError: `${reason}，下次先查询原交易`,
     });
     return { outcome: 'unknown', writeback };
   });
@@ -185,10 +186,17 @@ export async function processPaymentTask(task) {
       // 查询失败不能判断交易是否存在，退避重试，不补发支付
       return retryOrFail(task, `原交易结果查询失败: ${err.message}`);
     }
-    if (prev?.status === 'succeeded') {
-      return finalizeSuccess(task, payment, prev);
-    }
-    if (prev?.status === 'failed') {
+    if (prev?.status === 'succeeded' || prev?.status === 'failed') {
+      try {
+        // 第三方查询结果必须与本地金额一致，才能改变订单/支付终态。
+        validateProviderFinalAmount(prev, payment.amount);
+      } catch (err) {
+        // 不把不可信的响应当成支付成功或失败；保留 unknown 继续核查。
+        return retryOrFail(task, `原交易结果校验失败: ${err.message}`);
+      }
+      if (prev.status === 'succeeded') {
+        return finalizeSuccess(task, payment, prev);
+      }
       return finalizeBusinessFailure(task, payment, prev.reason || '支付失败');
     }
     //! 平台返回 unknown 等非终态：可能已扣款，等待退避时间后重新查询，不直接补发支付。
@@ -209,19 +217,30 @@ export async function processPaymentTask(task) {
   }
 
   // 正常发起支付；稳定幂等键随支付记录复用，重领/重启后不变
+  let result;
   try {
-    const result = await providerPay({
+    result = await providerPay({
       idempotencyKey: payment.idempotency_key,
       amount: amount.toString(), // 平台 API 金额同样走十进制字符串
     });
-    if (result.status === 'succeeded') {
-      return finalizeSuccess(task, payment, result);
-    }
-    return finalizeBusinessFailure(task, payment, result.reason || '支付失败');
   } catch (err) {
     if (err instanceof PaymentTimeoutError) {
       return markUnknown(task, payment);
     }
     return retryOrFail(task, `支付调用异常: ${err.message}`);
   }
+
+  // 只接受已验证金额的终态响应。格式错误、金额不一致、非终态均不能确认支付或取消订单。
+  if (result?.status === 'succeeded' || result?.status === 'failed') {
+    try {
+      validateProviderFinalAmount(result, payment.amount);
+    } catch (err) {
+      return markUnknown(task, payment, `支付平台响应校验失败: ${err.message}`);
+    }
+    if (result.status === 'succeeded') {
+      return finalizeSuccess(task, payment, result);
+    }
+    return finalizeBusinessFailure(task, payment, result.reason || '支付失败');
+  }
+  return markUnknown(task, payment, '支付平台未返回明确的支付终态');
 }
