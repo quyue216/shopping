@@ -55,7 +55,7 @@ export async function ensureTestDatabase() {
 export async function resetDb() {
   const p = getPool();
   await p.query(
-    `TRUNCATE payment_provider_ledger, payment_tasks, payments, order_items, orders, products, users
+    `TRUNCATE payment_reconciliation_logs, payment_provider_ledger, payment_tasks, payments, order_items, orders, products, users
      RESTART IDENTITY CASCADE`
   );
   await p.query(`SELECT setval('payment_provider_txn_seq', 1, false)`);

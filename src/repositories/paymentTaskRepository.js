@@ -61,6 +61,35 @@ export async function finishTask(client, { taskId, version, status, lastError = 
 }
 
 /**
+ * 按任务 ID 查询一条死信任务及其支付、订单上下文。
+ * 仅允许查询 status=failed 的任务，供人工对账入口使用。
+ */
+export async function getDeadLetterTaskById(client, taskId) {
+  const { rows } = await client.query(
+    `SELECT
+        pt.id AS task_id,
+        pt.payment_id,
+        pt.status AS task_status,
+        pt.version,
+        pt.attempts,
+        pt.last_error,
+        p.order_id,
+        p.idempotency_key,
+        p.amount::text AS payment_amount,
+        p.status AS payment_status,
+        p.provider_transaction_id,
+        o.status AS order_status,
+        o.total_amount::text AS order_amount
+       FROM payment_tasks pt
+       JOIN payments p ON p.id = pt.payment_id
+       JOIN orders o ON o.id = p.order_id
+      WHERE pt.id = $1 AND pt.status = 'failed'`,
+    [taskId],
+  );
+  return rows[0] || null;
+}
+
+/**
  * 查询死信任务（status=failed）及其支付、订单上下文。
  * 只读查询，不会自动重试未知支付，避免在未核实第三方账本前重复触发资金操作。
  */

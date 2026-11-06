@@ -81,7 +81,7 @@ export async function cancelOrder(client, orderId) {
 /** 查订单明细（回补库存用） */
 export async function getOrderItems(client, orderId) {
   const { rows } = await client.query(
-    'SELECT product_id, quantity FROM order_items WHERE order_id = $1',
+    'SELECT product_id, quantity FROM order_items WHERE order_id = $1 ORDER BY product_id',
     [orderId],
   );
   return rows;
