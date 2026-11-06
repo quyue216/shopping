@@ -89,7 +89,7 @@ async function applyConfirmedResult({ taskContext, providerResult, operator }) {
   try {
     await client.query('BEGIN');
 
-    // 锁顺序与 Worker 保持一致：支付 → 订单 → 任务 → 商品，降低死锁风险。
+    // 锁顺序与 Worker 保持一致：支付 → 订单 → 商品 → 任务，降低死锁风险。
     const { rows: paymentRows } = await client.query(
       'SELECT id, order_id, idempotency_key, amount::text AS amount, status, provider_transaction_id\n' +
       '  FROM payments WHERE id = $1 FOR UPDATE',
@@ -113,7 +113,8 @@ async function applyConfirmedResult({ taskContext, providerResult, operator }) {
       return { outcome: 'conflict', message: '关联订单已不存在，未执行修复' };
     }
 
-    if (payment.idempotency_key !== taskContext.idempotency_key ||
+    if (String(payment.order_id) !== String(taskContext.order_id) ||
+        payment.idempotency_key !== taskContext.idempotency_key ||
         BigInt(payment.amount) !== BigInt(taskContext.payment_amount) ||
         BigInt(order.total_amount) !== BigInt(payment.amount)) {
       await client.query('ROLLBACK');
