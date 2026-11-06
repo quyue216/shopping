@@ -232,6 +232,7 @@ async function applyConfirmedResult({ taskContext, providerResult, operator }) {
       providerTransactionId: providerResult.providerTransactionId || null,
       providerReason: typeof providerResult.reason === 'string' ? providerResult.reason : null,
       taskLastError: task.last_error,
+      taskAttemptsBefore: task.attempts,
     });
 
     await client.query('COMMIT');
@@ -257,10 +258,127 @@ async function applyConfirmedResult({ taskContext, providerResult, operator }) {
 }
 
 /**
+ * 第三方明确查无交易时，经操作人显式确认后重新排队。
+ * 只重置任务，不发起支付；后续由 Worker 使用原幂等键执行。
+ */
+async function requeueAfterNotFound({ taskContext, operator }) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 与支付写回保持相同的行锁顺序，先锁支付和订单，再锁任务。
+    const { rows: paymentRows } = await client.query(
+      'SELECT id, order_id, idempotency_key, amount::text AS amount, status\n' +
+      '  FROM payments WHERE id = $1 FOR UPDATE',
+      [taskContext.payment_id],
+    );
+    const payment = paymentRows[0];
+    const { rows: orderRows } = await client.query(
+      'SELECT id, total_amount::text AS total_amount, status\n' +
+      '  FROM orders WHERE id = $1 FOR UPDATE',
+      [payment?.order_id],
+    );
+    const order = orderRows[0];
+
+    if (!payment || !order ||
+        String(payment.order_id) !== String(taskContext.order_id) ||
+        payment.idempotency_key !== taskContext.idempotency_key ||
+        BigInt(payment.amount) !== BigInt(taskContext.payment_amount) ||
+        BigInt(order.total_amount) !== BigInt(payment.amount)) {
+      await client.query('ROLLBACK');
+      return { outcome: 'local_data_mismatch', message: '支付、订单关联或金额发生变化，未重新排队' };
+    }
+
+    if (!['pending', 'unknown'].includes(payment.status) || order.status !== 'pending') {
+      await client.query('ROLLBACK');
+      return {
+        outcome: 'conflict',
+        message: '只有 pending/unknown 支付且 pending 订单可以重新排队；当前状态为 ' +
+          payment.status + '/' + order.status,
+      };
+    }
+
+    const { rows: taskRows } = await client.query(
+      'SELECT id, payment_id, status, version, attempts, last_error\n' +
+      '  FROM payment_tasks WHERE id = $1 FOR UPDATE',
+      [taskContext.task_id],
+    );
+    const task = taskRows[0];
+    if (!task || task.status !== 'failed' ||
+        String(task.payment_id) !== String(payment.id) ||
+        String(task.version) !== String(taskContext.version)) {
+      await client.query('ROLLBACK');
+      return { outcome: 'conflict', message: '任务状态或版本已变化，未重新排队' };
+    }
+
+    const reason = '人工对账确认第三方无交易记录，已使用原幂等键重新排队';
+    const { rows: requeuedRows } = await client.query(
+      `UPDATE payment_tasks
+          SET status = 'pending',
+              attempts = 0,
+              available_at = now(),
+              lease_until = NULL,
+              version = version + 1,
+              last_error = $3
+        WHERE id = $1 AND status = 'failed' AND version = $2
+        RETURNING id, version`,
+      [task.id, task.version, reason],
+    );
+    if (requeuedRows.length === 0) {
+      await client.query('ROLLBACK');
+      return { outcome: 'conflict', message: '任务未能安全重新排队' };
+    }
+
+    const audit = await insertReconciliationLog(client, {
+      taskId: task.id,
+      paymentId: payment.id,
+      orderId: order.id,
+      operator,
+      idempotencyKey: payment.idempotency_key,
+      action: 'task_requeued',
+      providerStatus: 'not_found',
+      providerAmount: null,
+      providerTransactionId: null,
+      providerReason: '第三方账本查询返回 HTTP 404',
+      taskLastError: task.last_error,
+      taskAttemptsBefore: task.attempts,
+    });
+
+    await client.query('COMMIT');
+    return {
+      outcome: 'requeued',
+      taskId: String(task.id),
+      paymentId: String(payment.id),
+      orderId: String(order.id),
+      nextVersion: requeuedRows[0].version,
+      attemptsReset: true,
+      auditId: String(audit.id),
+      operator,
+      message: '任务已重新排队；后续由 Worker 使用原支付幂等键处理，没有直接发起支付请求',
+    };
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // 保留原始错误。
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * 对指定死信任务执行人工对账。
  * 默认 dry-run；只有显式传入 apply=true 才会修改本地业务状态。
+ * 第三方 404 默认不重试；只有显式传入 requeueIfNotFound=true 才会预览/执行重新排队。
  */
-export async function reconcileDeadLetterTask({ taskId: rawTaskId, apply = false, operator: rawOperator } = {}) {
+export async function reconcileDeadLetterTask({
+  taskId: rawTaskId,
+  apply = false,
+  operator: rawOperator,
+  requeueIfNotFound = false,
+} = {}) {
   const taskId = normalizeTaskId(rawTaskId);
   const taskContext = await getDeadLetterTaskById(pool, taskId);
   if (!taskContext) {
@@ -276,6 +394,21 @@ export async function reconcileDeadLetterTask({ taskId: rawTaskId, apply = false
   }
 
   const queried = await queryProviderPayment(taskContext.idempotency_key);
+  if (queried.outcome === 'not_found' && requeueIfNotFound) {
+    if (!apply) {
+      return {
+        outcome: 'ready_to_requeue',
+        taskId,
+        paymentId: String(taskContext.payment_id),
+        orderId: String(taskContext.order_id),
+        message: '第三方账本返回 404；添加 --apply 才会将任务重新排队。不会直接发起支付',
+      };
+    }
+    const operator = normalizeOperator(
+      rawOperator || process.env.RECONCILIATION_OPERATOR || process.env.USERNAME || process.env.USER,
+    );
+    return requeueAfterNotFound({ taskContext, operator });
+  }
   if (queried.outcome !== 'confirmed') {
     return { taskId, ...queried };
   }

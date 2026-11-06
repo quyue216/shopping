@@ -141,6 +141,44 @@ test('第三方 404：不补发支付，不修改本地数据', async (t) => {
   assert.equal((await getTask(fixture.taskId)).status, 'failed');
 });
 
+test('第三方 404：显式确认后只重新排队，不直接发起支付', async (t) => {
+  const fixture = await createDeadLetterFixture();
+  mockProvider(t, { status: 'not_found' }, 404);
+
+  const preview = await reconcileDeadLetterTask({
+    taskId: String(fixture.taskId),
+    requeueIfNotFound: true,
+  });
+  assert.equal(preview.outcome, 'ready_to_requeue');
+  assert.equal((await getTask(fixture.taskId)).status, 'failed');
+
+  const result = await reconcileDeadLetterTask({
+    taskId: String(fixture.taskId),
+    apply: true,
+    requeueIfNotFound: true,
+    operator: 'test-operator',
+  });
+  assert.equal(result.outcome, 'requeued');
+  assert.equal(result.attemptsReset, true);
+  assert.equal((await getPayment(fixture.paymentId)).status, 'unknown');
+  assert.equal((await getOrder(fixture.orderId)).status, 'pending');
+  const task = await getTask(fixture.taskId);
+  assert.equal(task.status, 'pending');
+  assert.equal(task.attempts, 0);
+  assert.equal(task.lease_until, null);
+  assert.match(task.last_error, /原幂等键重新排队/);
+
+  const { rows } = await getPool().query(
+    'SELECT action, provider_status, provider_amount, task_attempts_before FROM payment_reconciliation_logs WHERE task_id = $1',
+    [fixture.taskId],
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].action, 'task_requeued');
+  assert.equal(rows[0].provider_status, 'not_found');
+  assert.equal(rows[0].provider_amount, null);
+  assert.equal(rows[0].task_attempts_before, 5);
+});
+
 test('第三方返回处理中：不修改本地数据', async (t) => {
   const fixture = await createDeadLetterFixture();
   mockProvider(t, { status: 'processing', amount: '500' });

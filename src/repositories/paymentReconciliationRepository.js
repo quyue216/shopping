@@ -12,6 +12,7 @@ export async function insertReconciliationLog(client, {
   providerTransactionId = null,
   providerReason = null,
   taskLastError = null,
+  taskAttemptsBefore = 0,
 }) {
   const { rows } = await client.query(
     `INSERT INTO payment_reconciliation_logs (
@@ -25,9 +26,10 @@ export async function insertReconciliationLog(client, {
        provider_amount,
        provider_transaction_id,
        provider_reason,
-       task_last_error
+       task_last_error,
+       task_attempts_before
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      RETURNING id, created_at`,
     [
       taskId,
@@ -41,6 +43,7 @@ export async function insertReconciliationLog(client, {
       providerTransactionId,
       providerReason,
       taskLastError,
+      taskAttemptsBefore,
     ],
   );
   return rows[0];

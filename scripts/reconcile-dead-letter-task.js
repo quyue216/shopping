@@ -5,12 +5,14 @@ function usage() {
   console.log('用法：');
   console.log('  npm run tasks:reconcile -- <任务ID>                 # 只查询并预览，不修改数据');
   console.log('  npm run tasks:reconcile -- <任务ID> --apply         # 核实第三方终态后修复本地数据');
+  console.log('  npm run tasks:reconcile -- <任务ID> --requeue-if-not-found --apply');
   console.log('  npm run tasks:reconcile -- <任务ID> --apply --operator=姓名');
 }
 
 async function main() {
   const [taskId, ...args] = process.argv.slice(2);
-  if (!taskId || args.some((arg) => arg !== '--apply' && !arg.startsWith('--operator='))) {
+  if (!taskId || args.some((arg) =>
+    !['--apply', '--requeue-if-not-found'].includes(arg) && !arg.startsWith('--operator='))) {
     usage();
     process.exitCode = 2;
     return;
@@ -21,6 +23,7 @@ async function main() {
   const result = await reconcileDeadLetterTask({
     taskId,
     apply: args.includes('--apply'),
+    requeueIfNotFound: args.includes('--requeue-if-not-found'),
     operator,
   });
 
