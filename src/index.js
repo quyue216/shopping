@@ -9,6 +9,9 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
+// 测试台页面：http://localhost:3000/ （开发辅助工具）
+app.use(express.static('public'));
+
 app.use(healthRouter);
 app.use(authRouter);
 app.use(productsRouter);
