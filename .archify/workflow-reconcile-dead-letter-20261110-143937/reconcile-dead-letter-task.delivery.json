@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "f5c95652-8fac-4090-a330-28d59a35807e",
+  "status": "current",
+  "command": "deliver",
+  "type": "workflow",
+  "input": "E:\\quyue-work\\study\\shopping\\.archify\\workflow-reconcile-dead-letter-20261110-143937\\candidate.json",
+  "output": "E:\\quyue-work\\study\\shopping\\.archify\\workflow-reconcile-dead-letter-20261110-143937\\reconcile-dead-letter-task.html",
+  "specification": {
+    "sha256": "ae2ca540036bfa43df4e604ec7c92bf5af0c5f30c2bcccc3d4cf34b4851b86b1",
+    "bytes": 10879
+  },
+  "artifact": {
+    "sha256": "14fc4bd748e4e397c9c737a6aded8e3f2863fa8ef707a8d51873bc753ad130f0",
+    "bytes": 869042
+  }
+}

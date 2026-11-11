@@ -1,0 +1,289 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "人工对账：reconcileDeadLetterTask 死信任务处理流程",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "output": ".archify/workflow-reconcile-dead-letter-20261110-143937/reconcile-dead-letter-task.html",
+    "repository": {
+      "url": "https://github.com/quyue216/shopping.git",
+      "provider": "github",
+      "revision": "1fe49016151015d8219c9c4d2aed5b63f7487bcb"
+    }
+  },
+  "lanes": [
+    { "id": "local", "label": "本地前置校验退出", "variant": "exception" },
+    { "id": "svc", "label": "CLI 入口 → reconcileDeadLetterTask" },
+    { "id": "ext", "label": "第三方支付平台" },
+    { "id": "dry", "label": "核实后退出 / dry-run 预览", "variant": "exception" },
+    { "id": "tx", "label": "PostgreSQL 事务（--apply）" },
+    { "id": "done", "label": "落地结果 outcome" }
+  ],
+  "phases": [
+    { "id": "p-load", "label": "加载与本地校验", "fromCol": 0, "toCol": 1 },
+    { "id": "p-verify", "label": "第三方核实与校验", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "p-apply", "label": "修复执行与落地", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["cli-main", "load", "amount-check", "query", "classify", "gate", "tx-apply", "applied"],
+  "semanticChecks": {
+    "allowedRoots": ["cli-main"],
+    "allowedTerminals": [
+      "out-notfound",
+      "out-mismatch",
+      "out-noterminal",
+      "out-invalid",
+      "out-preview",
+      "out-conflict",
+      "applied",
+      "requeued"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "cli-main",
+      "lane": "svc",
+      "col": 0,
+      "type": "frontend",
+      "label": "main()",
+      "sublabel": "解析 --apply 等 CLI 标志",
+      "icon": "start",
+      "sources": [
+        { "path": "scripts/reconcile-dead-letter-task.js", "line": 13, "end_line": 35, "label": "参数解析" }
+      ]
+    },
+    {
+      "id": "load",
+      "lane": "svc",
+      "col": 1,
+      "type": "backend",
+      "label": "加载死信任务",
+      "sublabel": "含支付/订单金额快照",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 382, "end_line": 386 },
+        { "path": "src/services/reconciliationService.js", "line": 12, "end_line": 18, "label": "normalizeTaskId" }
+      ]
+    },
+    {
+      "id": "amount-check",
+      "lane": "svc",
+      "col": 2,
+      "type": "security",
+      "label": "本地金额校验",
+      "sublabel": "支付金额 ?= 订单金额",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 388, "end_line": 394 }
+      ]
+    },
+    {
+      "id": "query",
+      "lane": "ext",
+      "col": 2,
+      "type": "external",
+      "label": "GET /payments/{幂等键}",
+      "sublabel": "只查询不重付；3s 超时",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 29, "end_line": 59, "label": "queryProviderPayment" }
+      ]
+    },
+    {
+      "id": "classify",
+      "lane": "svc",
+      "col": 3,
+      "type": "backend",
+      "label": "第三方结果分类",
+      "sublabel": "终态确认 + 金额/字段校验",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 396, "end_line": 419 }
+      ]
+    },
+    {
+      "id": "gate",
+      "lane": "svc",
+      "col": 4,
+      "type": "security",
+      "label": "--apply 闸门",
+      "sublabel": "默认 dry-run 只预览",
+      "icon": "decision",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 397, "end_line": 411, "label": "重排闸门" },
+        { "path": "src/services/reconciliationService.js", "line": 421, "end_line": 436, "label": "修复闸门" }
+      ]
+    },
+    {
+      "id": "tx-apply",
+      "lane": "tx",
+      "col": 4,
+      "yOffset": -70,
+      "type": "database",
+      "label": "修复事务",
+      "sublabel": "成功 paid / 失败取消+回补库存",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 92, "end_line": 128, "label": "行锁与复核" },
+        { "path": "src/services/reconciliationService.js", "line": 133, "end_line": 198, "label": "成功/失败分支" },
+        { "path": "src/services/reconciliationService.js", "line": 200, "end_line": 247, "label": "写回+审计" }
+      ]
+    },
+    {
+      "id": "tx-requeue",
+      "lane": "tx",
+      "col": 4,
+      "yOffset": 70,
+      "type": "database",
+      "label": "重排事务",
+      "sublabel": "重置 pending，不直接支付",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 269, "end_line": 312, "label": "行锁与复核" },
+        { "path": "src/services/reconciliationService.js", "line": 314, "end_line": 358, "label": "重置+审计" }
+      ]
+    },
+    {
+      "id": "applied",
+      "lane": "done",
+      "col": 5,
+      "yOffset": -70,
+      "type": "database",
+      "label": "修复已落地",
+      "sublabel": "applied_success / applied_failure",
+      "icon": "success",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 238, "end_line": 247 }
+      ]
+    },
+    {
+      "id": "requeued",
+      "lane": "done",
+      "col": 5,
+      "yOffset": 70,
+      "type": "database",
+      "label": "requeued",
+      "sublabel": "审计；Worker 用原幂等键处理",
+      "icon": "active",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 315, "end_line": 330, "label": "重置任务" },
+        { "path": "src/services/reconciliationService.js", "line": 347, "end_line": 358 }
+      ]
+    },
+    {
+      "id": "out-notfound",
+      "lane": "local",
+      "col": 1,
+      "type": "security",
+      "label": "not_found",
+      "sublabel": "无 failed 死信任务",
+      "icon": "stop",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 383, "end_line": 386 }
+      ]
+    },
+    {
+      "id": "out-mismatch",
+      "lane": "local",
+      "col": 2,
+      "type": "security",
+      "label": "金额不一致",
+      "sublabel": "local_amount_mismatch",
+      "icon": "failure",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 388, "end_line": 394 }
+      ]
+    },
+    {
+      "id": "out-noterminal",
+      "lane": "dry",
+      "col": 3,
+      "yOffset": -95,
+      "type": "security",
+      "label": "未确认终态",
+      "sublabel": "not_found / non_terminal",
+      "icon": "waiting",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 40, "end_line": 56, "label": "404 与非终态" }
+      ]
+    },
+    {
+      "id": "out-invalid",
+      "lane": "dry",
+      "col": 3,
+      "yOffset": 0,
+      "type": "security",
+      "label": "结果不可信",
+      "sublabel": "invalid / amount_mismatch",
+      "icon": "failure",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 61, "end_line": 79, "label": "validateConfirmedResult" }
+      ]
+    },
+    {
+      "id": "out-preview",
+      "lane": "dry",
+      "col": 3,
+      "yOffset": 95,
+      "type": "backend",
+      "label": "预览结果",
+      "sublabel": "ready_to_apply / _requeue",
+      "icon": "neutral",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 398, "end_line": 406, "label": "ready_to_requeue" },
+        { "path": "src/services/reconciliationService.js", "line": 421, "end_line": 433, "label": "ready_to_apply" }
+      ]
+    },
+    {
+      "id": "out-conflict",
+      "lane": "dry",
+      "col": 5,
+      "type": "security",
+      "label": "并发冲突",
+      "sublabel": "conflict；事务已回滚",
+      "icon": "failure",
+      "sources": [
+        { "path": "src/services/reconciliationService.js", "line": 99, "end_line": 122, "label": "关联复核失败" },
+        { "path": "src/services/reconciliationService.js", "line": 206, "end_line": 212, "label": "任务版本冲突" }
+      ]
+    }
+  ],
+  "edges": [
+    { "id": "e-cli-load", "from": "cli-main", "to": "load", "label": "taskId + flags", "variant": "emphasis" },
+    { "id": "e-load-notfound", "from": "load", "to": "out-notfound", "label": "无 failed 任务", "role": "error" },
+    { "id": "e-load-amount", "from": "load", "to": "amount-check", "variant": "emphasis" },
+    { "id": "e-amount-mismatch", "from": "amount-check", "to": "out-mismatch", "label": "金额不一致", "role": "error" },
+    { "id": "e-amount-query", "from": "amount-check", "to": "query", "label": "只读查询", "variant": "emphasis" },
+    { "id": "e-query-classify", "from": "query", "to": "classify", "label": "404 / 非终态 / 终态", "variant": "emphasis" },
+    { "id": "e-classify-noterminal", "from": "classify", "to": "out-noterminal", "label": "未确认", "role": "error" },
+    { "id": "e-classify-invalid", "from": "classify", "to": "out-invalid", "label": "金额或字段不符", "role": "error" },
+    { "id": "e-classify-gate", "from": "classify", "to": "gate", "label": "终态确认 或 404+重排", "variant": "emphasis" },
+    { "id": "e-gate-preview", "from": "gate", "to": "out-preview", "label": "未加 --apply", "role": "branch", "variant": "dashed" },
+    { "id": "e-gate-apply", "from": "gate", "to": "tx-apply", "label": "--apply：修复", "variant": "emphasis" },
+    { "id": "e-gate-requeue", "from": "gate", "to": "tx-requeue", "label": "--apply：404 重排" },
+    { "id": "e-apply-done", "from": "tx-apply", "to": "applied", "label": "COMMIT + 审计", "variant": "emphasis" },
+    { "id": "e-apply-conflict", "from": "tx-apply", "to": "out-conflict", "label": "复核失败 ROLLBACK", "role": "error" },
+    { "id": "e-requeue-done", "from": "tx-requeue", "to": "requeued", "label": "COMMIT + 审计" },
+    { "id": "e-requeue-conflict", "from": "tx-requeue", "to": "out-conflict", "role": "error" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "安全默认",
+      "items": [
+        "默认 dry-run：不加 --apply 不改任何数据，只返回预览",
+        "第三方 404 不自动重付；--requeue-if-not-found 只重置任务，由 Worker 用原幂等键执行"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "事务与锁",
+      "items": [
+        "行锁顺序与 Worker 一致：支付 → 订单 → 商品 → 任务，降低死锁风险",
+        "写回前复核幂等键、金额、任务 status/version；任一不符整体 ROLLBACK"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "审计与 outcome 全名",
+      "items": [
+        "每次修复/重排写入 payment_reconciliation_logs：操作人、第三方金额与交易号、任务 last_error",
+        "结果不可信含 invalid_provider_result / amount_mismatch；预览含 ready_to_apply / ready_to_requeue"
+      ]
+    }
+  ]
+}

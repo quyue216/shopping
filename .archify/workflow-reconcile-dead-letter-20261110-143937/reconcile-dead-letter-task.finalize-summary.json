@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "workflow",
+  "quality": "showcase",
+  "specification": {
+    "path": "E:\\quyue-work\\study\\shopping\\.archify\\workflow-reconcile-dead-letter-20261110-143937\\candidate.json",
+    "sha256": "ae2ca540036bfa43df4e604ec7c92bf5af0c5f30c2bcccc3d4cf34b4851b86b1",
+    "bytes": 10879
+  },
+  "artifact": {
+    "path": "E:\\quyue-work\\study\\shopping\\.archify\\workflow-reconcile-dead-letter-20261110-143937\\reconcile-dead-letter-task.html",
+    "sha256": "14fc4bd748e4e397c9c737a6aded8e3f2863fa8ef707a8d51873bc753ad130f0",
+    "bytes": 869042
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "E:\\quyue-work\\study\\shopping\\.archify\\workflow-reconcile-dead-letter-20261110-143937\\reconcile-dead-letter-task.finalize.json",
+    "summaryReceipt": "E:\\quyue-work\\study\\shopping\\.archify\\workflow-reconcile-dead-letter-20261110-143937\\reconcile-dead-letter-task.finalize-summary.json",
+    "browserCheckReceipt": "E:\\quyue-work\\study\\shopping\\.archify\\workflow-reconcile-dead-letter-20261110-143937\\reconcile-dead-letter-task.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-10T06:41:26.425Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 9849,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}
