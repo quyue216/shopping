@@ -409,7 +409,7 @@ export async function reconcileDeadLetterTask({
     );
     return requeueAfterNotFound({ taskContext, operator });
   }
-  if (queried.outcome !== 'confirmed') {
+  if (queried.outcome !== 'confirmed') { //结果未知无需对账
     return { taskId, ...queried };
   }
 
