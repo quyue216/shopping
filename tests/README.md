@@ -25,7 +25,7 @@ WORKER_CRASH_AFTER_PAY_SUCCESS=1
 
 创建一笔金额大于 0 的订单。Worker 收到平台成功响应并校验金额后立即退出（退出码 86），日志包含任务、支付记录、幂等键和平台交易编号。使用 `worker` 命令演练，避免 watch 模式或进程管理器自动重启影响观察。
 
-此时 `payment_provider_ledger.status` 为 `succeeded`，`payments.status` 仍为 `pending`，`orders.status` 仍为 `pending`，`payment_tasks.status` 为 `processing`。模拟平台账本也在本地 PostgreSQL，但它代表第三方已独立提交的扣款结果；业务侧成功状态尚未写入。
+此时 `payment_provider_ledger.status` 为 `succeeded`，`payments.status` 为 `processing`，`orders.status` 仍为 `pending`，`payment_tasks.status` 为 `processing`。Worker 在领取任务后、发起扣款前已单独提交支付的 `processing` 状态。模拟平台账本也在本地 PostgreSQL，但它代表第三方已独立提交的扣款结果；业务侧成功状态尚未写入。
 
 观察完现场后，把 `.env` 中的开关改为 `0`，再运行 `npm run worker`：
 
@@ -33,7 +33,7 @@ WORKER_CRASH_AFTER_PAY_SUCCESS=1
 WORKER_CRASH_AFTER_PAY_SUCCESS=0
 ```
 
-租约到期后（默认从领取起 30 秒）任务会被重新领取。因为本地支付仍为 pending，当前实现会复用原幂等键再次调用支付，平台返回已有交易，随后本地写回成功，账本仍只有一笔。开关若未关闭，每次成功响应都会再次触发崩溃；零元订单、查询成功和支付失败不触发此崩溃点。
+租约到期后（默认从领取起 30 秒）任务会被重新领取。若本地支付为 processing 或 unknown，会先查询原交易，取得明确结果后写回本地；只有平台返回 404 时才复用原幂等键和金额补发。平台账本仍只有一笔。开关若未关闭，每次发起支付收到成功响应都会再次触发崩溃；零元订单、查询成功和支付失败不触发此崩溃点。
 
 | 文件 | 场景 | 关键断言 |
 |------|------|---------|

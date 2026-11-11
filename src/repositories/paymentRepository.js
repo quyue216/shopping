@@ -32,6 +32,23 @@ export async function getPaymentById(client, id) {
   return rows[0] || null;
 }
 
+/** 发起支付前单独提交 processing；仅待发起记录及当前任务租约允许更新。 */
+export async function markPaymentProcessing(client, { paymentId, taskId, version }) {
+  const { rows } = await client.query(
+    `UPDATE payments
+        SET status = 'processing'
+      WHERE id = $1 AND status = 'pending'
+        AND EXISTS (
+          SELECT 1 FROM payment_tasks
+           WHERE id = $2 AND payment_id = $1 AND version = $3
+             AND status = 'processing' AND lease_until > now()
+        )
+      RETURNING id, status`,
+    [paymentId, taskId, version],
+  );
+  return rows[0] || null;
+}
+
 /**
  * 支付状态流转。带"succeeded 终态不可逆"守卫：
  * 并发 Worker / 重试重复写回时不会产生副作用（影响 0 行）。

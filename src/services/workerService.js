@@ -1,7 +1,7 @@
 import { writeSync } from 'node:fs';
 import pool from '../db/pool.js';
 import { claimNextTask, finishTask, rescheduleTask } from '../repositories/paymentTaskRepository.js';
-import { getPaymentById, updatePaymentResult } from '../repositories/paymentRepository.js';
+import { getPaymentById, markPaymentProcessing, updatePaymentResult } from '../repositories/paymentRepository.js';
 import { markOrderPaid, cancelOrder, getOrderItems } from '../repositories/orderRepository.js';
 import { increaseStock } from '../repositories/productRepository.js';
 import { validateProviderFinalAmount } from '../utils/providerResult.js';
@@ -189,8 +189,8 @@ export async function processPaymentTask(task) {
     return finalizeSuccess(task, payment, { zeroAmount: true });
   }
 
-  // 结果不明确：先查询原交易结果，避免重复扣款
-  if (payment.status === 'unknown') {
+  // processing 可能是上次发起支付后崩溃遗留的状态；与 unknown 一样先查原交易。
+  if (payment.status === 'unknown' || payment.status === 'processing') {
     //! 原交易结果查询
     let prev;
     try {
@@ -204,7 +204,7 @@ export async function processPaymentTask(task) {
         // 第三方查询结果必须与本地金额一致，才能改变订单/支付终态。
         validateProviderFinalAmount(prev, payment.amount);
       } catch (err) {
-        // 不把不可信的响应当成支付成功或失败；保留 unknown 继续核查。
+        // 不把不可信的响应当成支付成功或失败；保留当前状态继续核查。
         return retryOrFail(task, `原交易结果校验失败: ${err.message}`);
       }
       if (prev.status === 'succeeded') {
@@ -218,7 +218,7 @@ export async function processPaymentTask(task) {
       return retryOrFail(task, '原交易结果尚未明确，稍后重试');
     }
     //! null 表示平台返回 404、未查到交易：继续下面的支付调用，复用原幂等键和金额补发。
-    //! 保留本地 unknown，直到拿到确定结果；同键并发或迟到请求由平台侧幂等去重。
+    //! 保留本地 processing/unknown，直到拿到确定结果；同键并发或迟到请求由平台侧幂等去重。
   }
 
   // 已终态（可能由并发 Worker 完成）：仅收尾任务
@@ -227,6 +227,15 @@ export async function processPaymentTask(task) {
   }
   if (payment.status === 'failed') {
     return finalizeBusinessFailure(task, payment, '支付已失败');
+  }
+
+  // 首次发起前提交 processing。使用 pool 的单语句自动提交，不让网络请求占用事务/锁。
+  // 条件更新避免把并发完成的支付改回处理中，或让已经被回收的旧任务修改待发起状态。
+  if (payment.status === 'pending') {
+    const started = await markPaymentProcessing(pool, {
+      paymentId: payment.id, taskId: task.id, version: task.version,
+    });
+    if (!started) return { outcome: 'stale' };
   }
 
   // 正常发起支付；稳定幂等键随支付记录复用，重领/重启后不变

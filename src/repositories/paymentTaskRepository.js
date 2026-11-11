@@ -46,11 +46,11 @@ export async function claimNextTask(client, leaseSeconds) {
 export async function finishTask(client, { taskId, version, status, lastError = null }) {
   const { rows } = await client.query(
     `UPDATE payment_tasks
-        SET status = $3,
+        SET status = $3::varchar,
             lease_until = NULL,
             last_error = CASE
-              WHEN $3 = 'failed' THEN COALESCE($4, last_error)
-              WHEN $3 = 'completed' THEN NULL
+              WHEN $3::varchar = 'failed' THEN COALESCE($4, last_error)
+              WHEN $3::varchar = 'completed' THEN NULL
               ELSE last_error
             END
       WHERE id = $1 AND version = $2

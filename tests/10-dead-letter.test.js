@@ -44,8 +44,8 @@ test('达到最大尝试次数：任务进入死信队列并保存最终失败�
   assert.match(savedTask.last_error, /超过最大尝试次数/);
   assert.match(savedTask.last_error, /provider temporarily unavailable/);
 
-  // 任务进入死信队列不等于支付失败：订单和支付仍保持原状态，库存/资金状态不被擅自修改。
-  assert.equal((await getPayment(failedFixture.paymentId)).status, 'pending');
+  // 任务进入死信队列不等于支付失败：支付已发起、尚未取得确定结果，订单仍待支付。
+  assert.equal((await getPayment(failedFixture.paymentId)).status, 'processing');
   assert.equal((await getOrder(failedFixture.orderId)).status, 'pending');
 
   const deadLetters = await listDeadLetterTasks(getPool(), { limit: 20 });
@@ -53,7 +53,7 @@ test('达到最大尝试次数：任务进入死信队列并保存最终失败�
   assert.equal(Number(deadLetters[0].task_id), failedFixture.taskId);
   assert.equal(Number(deadLetters[0].payment_id), failedFixture.paymentId);
   assert.equal(Number(deadLetters[0].order_id), failedFixture.orderId);
-  assert.equal(deadLetters[0].payment_status, 'pending');
+  assert.equal(deadLetters[0].payment_status, 'processing');
   assert.equal(deadLetters[0].order_status, 'pending');
   assert.match(deadLetters[0].last_error, /provider temporarily unavailable/);
 

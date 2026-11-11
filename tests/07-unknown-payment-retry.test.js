@@ -22,6 +22,86 @@ async function claimUnknownPayment() {
   return { ...fixture, task: await claimNext() };
 }
 
+test('首次支付：领取任务不改变支付状态，发请求前已提交 processing', async (t) => {
+  const { paymentId, taskId } = await createOrderFixture({ amount: 300 });
+  const task = await claimNext();
+  assert.equal((await getTask(taskId)).status, 'processing');
+  assert.equal((await getPayment(paymentId)).status, 'pending');
+  const mockFetch = t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(options.method, 'POST');
+    // 使用另一连接查询，验证状态在 HTTP 调用之前已经提交。
+    assert.equal((await getPayment(paymentId)).status, 'processing');
+    return Response.json({ status: 'succeeded', amount: '300', providerTransactionId: 'txn-first' });
+  });
+  assert.equal((await processPaymentTask(task)).outcome, 'succeeded');
+  assert.equal(mockFetch.mock.callCount(), 1);
+  assert.equal((await getPayment(paymentId)).status, 'succeeded');
+});
+
+test('首次支付：任务已被回收时，旧 Worker 不改变支付状态、不调用平台', async (t) => {
+  const { paymentId, taskId } = await createOrderFixture({ amount: 300 });
+  const oldTask = await claimNext();
+  await getPool().query('UPDATE payment_tasks SET version = version + 1 WHERE id = $1', [taskId]);
+  const mockFetch = t.mock.method(globalThis, 'fetch', async () => {
+    throw new Error('不应调用平台');
+  });
+  assert.equal((await processPaymentTask(oldTask)).outcome, 'stale');
+  assert.equal(mockFetch.mock.callCount(), 0);
+  assert.equal((await getPayment(paymentId)).status, 'pending');
+});
+
+async function claimProcessingPayment() {
+  const fixture = await createOrderFixture({ amount: 300 });
+  await getPool().query("UPDATE payments SET status = 'processing' WHERE id = $1", [fixture.paymentId]);
+  return { ...fixture, task: await claimNext() };
+}
+
+test('processing 恢复：查询原交易成功，直接收尾且不重新扣款', async (t) => {
+  const { paymentId, orderId, taskId, task } = await claimProcessingPayment();
+  const mockFetch = t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.ok(url.endsWith(`/payments/pay-${orderId}`));
+    assert.notEqual(options.method, 'POST');
+    return Response.json({ status: 'succeeded', amount: '300', providerTransactionId: 'txn-recovered' });
+  });
+  assert.equal((await processPaymentTask(task)).outcome, 'succeeded');
+  assert.equal(mockFetch.mock.callCount(), 1);
+  assert.equal((await getPayment(paymentId)).provider_transaction_id, 'txn-recovered');
+  assert.equal((await getOrder(orderId)).status, 'paid');
+  assert.equal((await getTask(taskId)).status, 'completed');
+});
+
+test('processing 恢复：只有查询 404 才复用原幂等键和金额补发', async (t) => {
+  const { paymentId, orderId, task } = await claimProcessingPayment();
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls += 1;
+    if (calls === 1) {
+      assert.ok(url.endsWith(`/payments/pay-${orderId}`));
+      return Response.json({}, { status: 404 });
+    }
+    assert.equal(options.method, 'POST');
+    assert.deepEqual(JSON.parse(options.body), { idempotencyKey: `pay-${orderId}`, amount: '300' });
+    assert.equal((await getPayment(paymentId)).status, 'processing');
+    return Response.json({ status: 'succeeded', amount: '300', providerTransactionId: 'txn-processing-404' });
+  });
+  assert.equal((await processPaymentTask(task)).outcome, 'succeeded');
+  assert.equal(calls, 2);
+});
+
+for (const scenario of ['非终态', '查询失败']) {
+  test(`processing 恢复：${scenario}时保留 processing 并退避，不补发`, async (t) => {
+    const { paymentId, taskId, task } = await claimProcessingPayment();
+    const mockFetch = t.mock.method(globalThis, 'fetch', async () =>
+      scenario === '非终态'
+        ? Response.json({ status: 'processing' })
+        : Response.json({ message: 'unavailable' }, { status: 503 }));
+    assert.equal((await processPaymentTask(task)).outcome, 'retry');
+    assert.equal(mockFetch.mock.callCount(), 1);
+    assert.equal((await getPayment(paymentId)).status, 'processing');
+    assert.equal((await getTask(taskId)).status, 'pending');
+  });
+}
+
 test('unknown 查询 404：用原幂等键和金额补发，支付与订单成功收尾', async (t) => {
   const { orderId, paymentId, taskId, task } = await claimUnknownPayment();
   const requests = [];

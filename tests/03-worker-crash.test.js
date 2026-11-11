@@ -40,7 +40,7 @@ test('扣款成功后崩溃：保留未写回现场，重启后同键恢复且�
   const ledgerBefore = await getLedgerByKey(`pay-${orderId}`);
   assert.equal(ledgerBefore.length, 1);
   assert.equal(ledgerBefore[0].status, 'succeeded');
-  assert.equal((await getPayment(paymentId)).status, 'pending');
+  assert.equal((await getPayment(paymentId)).status, 'processing');
   assert.equal((await getPayment(paymentId)).provider_transaction_id, null);
   assert.equal((await getOrder(orderId)).status, 'pending');
   assert.equal((await getTask(taskId)).status, 'processing');
@@ -70,15 +70,15 @@ test('Worker 崩溃：租约过期后任务被新 Worker 回收并完成', { tim
   // W1 领取任务后，在 3 秒的支付在途期间被强杀（模拟崩溃）
   const w1 = startWorker({ PAYMENT_PROVIDER_URL: PROVIDER_SLOW_URL, WORKER_LEASE_SECONDS: LEASE_SECONDS, PAYMENT_PROVIDER_TIMEOUT_MS: 10000 });
   await waitForLog(w1, 'started');
-  await waitFor(async () => (await getTask(taskId))?.status === 'processing', { message: '任务被 W1 领取' });
+  await waitFor(async () => (await getPayment(paymentId))?.status === 'processing', { message: 'W1 已提交支付 processing' });
   killChild(w1);
   await waitFor(() => w1.exited, { message: 'W1 进程退出' });
 
   // 租约未过期前，其他 Worker 不能抢这个任务
   assert.equal((await getTask(taskId)).status, 'processing');
 
-  // 租约过期后 W2 回收任务：支付记录仍 pending，重新发起支付；
-  // 平台账本已有该幂等键的记录（W1 在途时平台已记账），返回首个结果，不重复扣款
+  // 租约过期后 W2 回收任务：支付记录仍 processing，先查询原交易；
+  // 若 W1 的请求尚未到达平台，则查询 404 后使用原幂等键补发，不重复扣款。
   const w2 = startWorker({ PAYMENT_PROVIDER_URL: PROVIDER_SLOW_URL, WORKER_LEASE_SECONDS: LEASE_SECONDS, PAYMENT_PROVIDER_TIMEOUT_MS: 10000 });
   await waitForLog(w2, 'started');
   await waitFor(async () => (await getOrder(orderId))?.status === 'paid', {
