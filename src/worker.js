@@ -28,6 +28,9 @@ async function tick() {
 }
 
 console.log(`[worker] started (pid ${process.pid}), polling every ${POLL_INTERVAL_MS}ms`);
+if (process.env.WORKER_CRASH_AFTER_PAY_SUCCESS === '1') {
+  console.warn('[worker] crash simulation enabled: exit 86 after a successful charge, before local writeback');
+}
 const timer = setInterval(tick, POLL_INTERVAL_MS);
 
 /** 优雅退出：停止轮询 → 关闭连接池 → 退出进程 */

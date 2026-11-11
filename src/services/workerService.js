@@ -1,3 +1,4 @@
+import { writeSync } from 'node:fs';
 import pool from '../db/pool.js';
 import { claimNextTask, finishTask, rescheduleTask } from '../repositories/paymentTaskRepository.js';
 import { getPaymentById, updatePaymentResult } from '../repositories/paymentRepository.js';
@@ -250,6 +251,14 @@ export async function processPaymentTask(task) {
       return markUnknown(task, payment, `支付平台响应校验失败: ${err.message}`);
     }
     if (result.status === 'succeeded') {
+      // 手动故障演练：平台已确认扣款成功，但本地写回事务尚未开始。
+      // 必须终止进程，不能 throw（会被 tick 捕获），也不执行优雅退出。
+      if (process.env.WORKER_CRASH_AFTER_PAY_SUCCESS === '1') {
+        writeSync(2, `[worker] simulated crash after provider success: task=${task.id} ` +
+          `payment=${payment.id} idempotencyKey=${payment.idempotency_key} ` +
+          `providerTransactionId=${result.providerTransactionId}; local writeback skipped (exit 86)\n`);
+        process.exit(86);
+      }
       return finalizeSuccess(task, payment, result);
     }
     return finalizeBusinessFailure(task, payment, result.reason || '支付失败');
