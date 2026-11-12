@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import { databaseConfig } from '../src/config.js';
 
 const { Client } = pg;
 
@@ -11,14 +12,7 @@ const MIGRATIONS_DIR = path.resolve(
 );
 
 // 迁移用单个连接（同一连接上 BEGIN/COMMIT 才有效），不用连接池
-const client = new Client({
-  host: process.env.PGHOST || 'localhost',
-  port: Number(process.env.PGPORT) || 5432,
-  user: process.env.PGUSER || 'postgres',
-  password: process.env.PGPASSWORD || 'postgres',
-  database: process.env.PGDATABASE || 'shopping',
-  connectionTimeoutMillis: 3000,
-});
+const client = new Client(databaseConfig());
 
 /** 账本表自举：记录已执行的迁移文件名 */
 async function ensureMigrationsTable() {

@@ -5,16 +5,11 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TEST_DB } from './setup.js';
+import { databaseConfig } from '../../src/config.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-const CONN = {
-  host: 'localhost',
-  port: 5432,
-  user: 'postgres',
-  password: 'postgres',
-  connectionTimeoutMillis: 3000,
-};
+const CONN = databaseConfig();
 
 let pool;
 export function getPool() {
@@ -34,7 +29,13 @@ export async function closePool() {
 
 /** 创建测试库（不存在时）并执行全部迁移；幂等，可重复调用 */
 export async function ensureTestDatabase() {
-  const admin = new pg.Client({ ...CONN, database: 'postgres' });
+  const adminConfig = { ...CONN, database: 'postgres' };
+  if (CONN.connectionString) {
+    const url = new URL(CONN.connectionString);
+    url.pathname = '/postgres';
+    adminConfig.connectionString = url.toString();
+  }
+  const admin = new pg.Client(adminConfig);
   await admin.connect();
   const { rows } = await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [TEST_DB]);
   if (rows.length === 0) {

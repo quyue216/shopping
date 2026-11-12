@@ -13,7 +13,7 @@ router.get('/health/db', async (req, res, next) => {
     if (ok) {
       res.status(200).json({ status: 'ok' });
     } else {
-      res.status(503).json({ status: 'error', message: 'Database unavailable' });
+      res.status(503).json({ status: 'error', code: 'DATABASE_UNAVAILABLE', message: 'Database unavailable', requestId: req.requestId });
     }
   } catch (err) {
     next(err);

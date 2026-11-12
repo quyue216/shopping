@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { createOrder, getOrder } from '../services/orderService.js';
+import { HttpError } from '../httpError.js';
+import { logger } from '../observability/logger.js';
 
 const router = Router();
 
@@ -8,8 +10,8 @@ const router = Router();
 router.get('/orders/:id', requireAuth, async (req, res, next) => {
   try {
     const orderId = Number(req.params.id);
-    if (!Number.isInteger(orderId) || orderId <= 0) {
-      return res.status(400).json({ status: 'error', message: '订单 ID 必须为正整数' });
+    if (!Number.isSafeInteger(orderId) || orderId <= 0) {
+      throw new HttpError(400, '订单 ID 必须为正整数');
     }
     const order = await getOrder({ userId: req.user.id, orderId });
     res.status(200).json({ order });
@@ -27,6 +29,7 @@ router.post('/orders', requireAuth, async (req, res, next) => {
   try {
     const { idempotencyKey, items } = req.body ?? {};
     const result = await createOrder({ userId: req.user.id, idempotencyKey, items });
+    logger.info(result.replayed ? 'order.replayed' : 'order.created', { orderId: String(result.order.id), userId: req.user.id });
 
     const body = {
       orderId: Number(result.order.id),

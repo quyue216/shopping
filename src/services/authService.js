@@ -2,14 +2,11 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { createUser, findByIdentifier } from '../repositories/userRepository.js';
 import { HttpError } from '../httpError.js';
+import { apiConfig } from '../config.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-secret-change-me';
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '2h';
+const { jwtSecret: JWT_SECRET, jwtExpiresIn: JWT_EXPIRES_IN } = apiConfig();
 const BCRYPT_ROUNDS = 10;
 
-if (JWT_SECRET === 'dev-only-secret-change-me') {
-  console.warn('[auth] JWT_SECRET 未配置，正在使用开发默认值，生产环境必须设置 JWT_SECRET');
-}
 
 function signToken(user) {
   return jwt.sign(
@@ -20,8 +17,11 @@ function signToken(user) {
 }
 
 export async function register({ username, email, password }) {
-  if (!username?.trim() || !email?.trim()) {
+  if (typeof username !== 'string' || !username.trim() || typeof email !== 'string' || !email.trim()) {
     throw new HttpError(400, 'username 和 email 不能为空');
+  }
+  if (username.trim().length > 50 || email.trim().length > 255 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) {
+    throw new HttpError(400, 'username 最多 50 字符，email 必须为有效邮箱且最多 255 字符');
   }
   if (typeof password !== 'string' || password.length < 8) {
     throw new HttpError(400, '密码至少 8 位');
@@ -34,14 +34,14 @@ export async function register({ username, email, password }) {
   } catch (err) {
     // 唯一约束冲突（username 或 email 已存在）
     if (err.code === '23505') {
-      throw new HttpError(409, '用户名或邮箱已被注册');
+      throw new HttpError(409, '用户名或邮箱已被注册', 'USER_EXISTS');
     }
     throw err;
   }
 }
 
 export async function login({ identifier, password }) {
-  if (!identifier || !password) {
+  if (typeof identifier !== 'string' || !identifier.trim() || typeof password !== 'string' || !password) {
     throw new HttpError(400, 'identifier 和 password 不能为空');
   }
 

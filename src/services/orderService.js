@@ -46,10 +46,10 @@ function normalizeItems(items) {
   for (const item of items) {
     const productId = Number(item?.productId);
     const quantity = Number(item?.quantity);
-    if (!Number.isInteger(productId) || productId <= 0) {
+    if (!Number.isSafeInteger(productId) || productId <= 0) {
       throw new HttpError(400, 'productId 必须为正整数');
     }
-    if (!Number.isInteger(quantity) || quantity <= 0) {
+    if (!Number.isInteger(quantity) || quantity <= 0 || quantity > 2147483647 || (merged.get(productId) || 0) + quantity > 2147483647) {
       throw new HttpError(400, '购买数量必须为正整数');
     }
     merged.set(productId, (merged.get(productId) || 0) + quantity);
@@ -78,7 +78,7 @@ function sameContent(orderItems, requestItems) {
  * 失败整体回滚，不留半成品。
  */
 export async function createOrder({ userId, idempotencyKey, items: rawItems }) {
-  if (!idempotencyKey?.trim()) {
+  if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim() || idempotencyKey.trim().length > 128) {
     throw new HttpError(400, 'idempotencyKey 不能为空');
   }
   const items = normalizeItems(rawItems);
@@ -91,7 +91,7 @@ export async function createOrder({ userId, idempotencyKey, items: rawItems }) {
     const existing = await findOrderWithItemsByKey(client, userId, idempotencyKey.trim());
     if (existing) {
       if (!sameContent(existing.items, items)) {
-        throw new HttpError(409, '该幂等键已被用于不同的购买内容');
+        throw new HttpError(409, '该幂等键已被用于不同的购买内容', 'IDEMPOTENCY_CONFLICT');
       }
       await client.query('COMMIT');
       return { order: existing, replayed: true };
@@ -109,7 +109,7 @@ export async function createOrder({ userId, idempotencyKey, items: rawItems }) {
       const concurrent = await findOrderWithItemsByKey(client, userId, idempotencyKey.trim());
       if (concurrent) {
         if (!sameContent(concurrent.items, items)) {
-          throw new HttpError(409, '该幂等键已被用于不同的购买内容');
+          throw new HttpError(409, '该幂等键已被用于不同的购买内容', 'IDEMPOTENCY_CONFLICT');
         }
         await client.query('COMMIT');
         return { order: concurrent, replayed: true };
@@ -125,7 +125,7 @@ export async function createOrder({ userId, idempotencyKey, items: rawItems }) {
         throw new HttpError(400, `商品 ${item.productId} 不存在`);
       }
       if (Number(product.stock) < item.quantity) {
-        throw new HttpError(409, `商品「${product.name}」库存不足（剩余 ${product.stock}）`);
+        throw new HttpError(409, `商品「${product.name}」库存不足（剩余 ${product.stock}）`, 'INSUFFICIENT_STOCK');
       }
       totalAmount += BigInt(product.price) * BigInt(item.quantity);
     }
@@ -173,7 +173,7 @@ export async function createOrder({ userId, idempotencyKey, items: rawItems }) {
       if (existing && sameContent(existing.items, items)) {
         return { order: existing, replayed: true };
       }
-      throw new HttpError(409, '该幂等键已被用于不同的购买内容');
+      throw new HttpError(409, '该幂等键已被用于不同的购买内容', 'IDEMPOTENCY_CONFLICT');
     }
     throw err;
   } finally {

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { register, login } from '../services/authService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { findById } from '../repositories/userRepository.js';
+import { HttpError } from '../httpError.js';
 
 const router = Router();
 
@@ -30,7 +31,7 @@ router.get('/auth/me', requireAuth, async (req, res, next) => {
   try {
     const user = await findById(req.user.id);
     if (!user) {
-      return res.status(404).json({ status: 'error', message: '用户不存在' });
+      throw new HttpError(404, '用户不存在');
     }
     res.status(200).json({ user });
   } catch (err) {

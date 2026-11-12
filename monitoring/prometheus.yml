@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+rule_files:
+  - /etc/prometheus/alerts.yml
+scrape_configs:
+  # Docker Desktop 从容器访问宿主机进程；Linux 需配置 host-gateway 或更换地址。
+  - job_name: shopping-api
+    static_configs:
+      - targets: ['host.docker.internal:3000']
+  - job_name: shopping-provider
+    static_configs:
+      - targets: ['host.docker.internal:4100']
+  - job_name: shopping-worker
+    static_configs:
+      - targets: ['host.docker.internal:9101']
+# 生产启用 METRICS_TOKEN 后，为每个 job 配置：
+# authorization:
+#   type: Bearer
+#   credentials_file: /run/secrets/metrics_token
+# 通知接入需另行配置 alerting.alertmanagers，参见 docs/operations.md。

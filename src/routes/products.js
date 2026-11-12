@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
+import { HttpError } from '../httpError.js';
 import { listAll, getById, create } from '../services/productService.js';
 
 const router = Router();
@@ -17,8 +18,8 @@ router.get('/products', async (req, res, next) => {
 router.get('/products/:id', async (req, res, next) => {
   try {
     const productId = Number(req.params.id);
-    if (!Number.isInteger(productId) || productId <= 0) {
-      return res.status(400).json({ status: 'error', message: '商品 ID 必须为正整数' });
+    if (!Number.isSafeInteger(productId) || productId <= 0) {
+      throw new HttpError(400, '商品 ID 必须为正整数');
     }
     res.status(200).json({ product: await getById(productId) });
   } catch (err) {

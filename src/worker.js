@@ -1,49 +1,58 @@
+import express from 'express';
 import { claimNext, processPaymentTask } from './services/workerService.js';
 import pool from './db/pool.js';
+import { workerConfig } from './config.js';
+import { logger } from './observability/logger.js';
+import { metricsHandler } from './observability/http.js';
+import { workerTicks } from './observability/metrics.js';
 
-// Worker 进程：与 API 同项目、同数据库，独立进程独立连接池。
-// 轮询任务表 → FOR UPDATE SKIP LOCKED 领取 → 执行支付 → 按 version 写回结果。
+const config = workerConfig();
+let stopping = false;
+let timer;
+let inFlight;
+let metricsServer;
 
-const POLL_INTERVAL_MS = Number(process.env.WORKER_POLL_INTERVAL_MS) || 2000;
-
-/** 执行领取到的任务并记录结果 */
-async function processTask(task) {
-  console.log(
-    `[worker] claimed task #${task.id} payment=${task.payment_id} ` +
-    `event=${task.event_type} attempt=${task.attempts} version=${task.version}`,
-  );
-  const result = await processPaymentTask(task);
-  console.log(`[worker] task #${task.id} -> ${JSON.stringify(result)}`);
-}
-
+// 每轮完成后再派发下一轮；多进程通过 SKIP LOCKED 并行。
 async function tick() {
   try {
     const task = await claimNext();
-    if (task) {
-      await processTask(task);
-    }
-  } catch (err) {
-    console.error('[worker] tick error:', err.message);
+    if (task) await processPaymentTask(task);
+    workerTicks.inc({ result: 'ok' });
+  } catch (error) {
+    workerTicks.inc({ result: 'error' });
+    logger.error('worker.tick_error', { message: 'tick error', error });
   }
 }
 
-console.log(`[worker] started (pid ${process.pid}), polling every ${POLL_INTERVAL_MS}ms`);
-if (process.env.WORKER_CRASH_AFTER_PAY_SUCCESS === '1') {
-  console.warn('[worker] crash simulation enabled: exit 86 after a successful charge, before local writeback');
+function schedule() {
+  if (stopping) return;
+  timer = setTimeout(() => { inFlight = tick().finally(schedule); }, config.pollIntervalMs);
 }
-const timer = setInterval(tick, POLL_INTERVAL_MS);
 
-/** 优雅退出：停止轮询 → 关闭连接池 → 退出进程 */
+if (config.metricsPort) {
+  const app = express();
+  app.get('/metrics', metricsHandler(config.metrics));
+  metricsServer = app.listen(config.metricsPort, '0.0.0.0');
+  metricsServer.on('error', (error) => {
+    logger.error('worker.metrics_listen_error', { error });
+    process.exitCode = 1;
+    void shutdown();
+  });
+}
+logger.info('worker.started', { message: 'started', pollIntervalMs: config.pollIntervalMs, metricsPort: config.metricsPort });
+if (config.crashAfterSuccess) logger.warn('worker.crash_simulation_enabled');
+schedule();
+
 async function shutdown() {
-  console.log('[worker] shutting down...');
-  clearInterval(timer);   // 停止派发新一轮领取，进行中的 processTask 不受影响
-  await pool.end();       // 等池内活跃查询结束后关闭全部连接
-  process.exit(0);
+  if (stopping) return;
+  stopping = true;
+  logger.info('worker.stopping');
+  clearTimeout(timer);
+  const deadline = setTimeout(() => process.exit(1), 15000).unref();
+  if (metricsServer) await new Promise((resolve) => metricsServer.close(resolve));
+  await inFlight;
+  await pool.end();
+  clearTimeout(deadline);
 }
-
-// 监听退出信号，保证 Worker 关停时不留悬挂的数据库连接：
-// SIGINT  = Ctrl+C（终端手动停止）
-// SIGTERM = 系统/容器编排发起的终止（如 docker stop、kill <pid>）
-// 未写回结果就被终止的任务，租约到期后会被其他 Worker 自动回收，不会丢
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

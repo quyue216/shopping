@@ -5,9 +5,9 @@ import { markOrderPaid, cancelOrder, getOrderItems } from '../repositories/order
 import { lockProductsByIds, increaseStock } from '../repositories/productRepository.js';
 import { insertReconciliationLog } from '../repositories/paymentReconciliationRepository.js';
 import { validateProviderFinalAmount } from '../utils/providerResult.js';
+import { paymentClientConfig } from '../config.js';
 
-const PAYMENT_PROVIDER_URL = process.env.PAYMENT_PROVIDER_URL || 'http://localhost:4100';
-const PAYMENT_PROVIDER_TIMEOUT_MS = Number(process.env.PAYMENT_PROVIDER_TIMEOUT_MS) || 3000;
+const { providerUrl: PAYMENT_PROVIDER_URL, timeoutMs: PAYMENT_PROVIDER_TIMEOUT_MS } = paymentClientConfig();
 
 function normalizeTaskId(value) {
   const taskId = String(value ?? '');

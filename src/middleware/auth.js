@@ -1,6 +1,8 @@
 import jwt from 'jsonwebtoken';
+import { apiConfig } from '../config.js';
+import { HttpError } from '../httpError.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-secret-change-me';
+const { jwtSecret: JWT_SECRET } = apiConfig();
 
 /** 校验 Authorization: Bearer <token>，通过后将 { id, username } 挂到 req.user */
 export function requireAuth(req, res, next) {
@@ -8,7 +10,7 @@ export function requireAuth(req, res, next) {
   const [scheme, token] = header.split(' ');
 
   if (scheme !== 'Bearer' || !token) {
-    return res.status(401).json({ status: 'error', message: '缺少 Bearer token' });
+    return next(new HttpError(401, '缺少 Bearer token'));
   }
 
   try {
@@ -16,6 +18,6 @@ export function requireAuth(req, res, next) {
     req.user = { id: Number(payload.sub), username: payload.username };
     next();
   } catch {
-    res.status(401).json({ status: 'error', message: 'token 无效或已过期' });
+    next(new HttpError(401, 'token 无效或已过期'));
   }
 }

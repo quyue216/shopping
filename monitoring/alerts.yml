@@ -1,0 +1,59 @@
+groups:
+  - name: shopping
+    rules:
+      - alert: ShoppingTargetDown
+        expr: up{job=~"shopping-.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: '进程指标不可达：{{ $labels.job }} {{ $labels.instance }}'
+      - alert: ShoppingPoolExhausted
+        expr: shopping_db_pool_connections{state="waiting"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: '连接池持续有等待者；检查连接泄漏、慢 SQL 和数据库连接预算'
+      - alert: ShoppingQueueCollectionFailed
+        expr: shopping_queue_collection_success{job="shopping-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: '队列指标采集失败；优先检查数据库连通性'
+      - alert: ShoppingTaskBacklog
+        expr: shopping_payment_tasks_oldest_ready_age_seconds{job="shopping-api"} > 60
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: '到期支付任务持续积压，检查 Worker 和 Provider'
+      - alert: ShoppingDeadLetter
+        expr: shopping_payment_tasks{job="shopping-api",status="failed"} > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: '存在死信任务，需要人工对账；禁止直接推断为支付失败'
+      - alert: ShoppingExpiredLeases
+        expr: shopping_payment_tasks_expired_leases{job="shopping-api"} > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: '过期租约未被回收，检查 Worker 存活与轮询错误'
+      - alert: ShoppingApiErrorRate
+        expr: sum(rate(shopping_http_request_duration_seconds_count{job="shopping-api",status=~"5..",route!~"/health.*|/metrics"}[5m])) / clamp_min(sum(rate(shopping_http_request_duration_seconds_count{job="shopping-api",route!~"/health.*|/metrics"}[5m])), 0.001) > 0.05 and sum(increase(shopping_http_request_duration_seconds_count{job="shopping-api",route!~"/health.*|/metrics"}[5m])) >= 20
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'API 5xx 超过 5%（5 分钟至少 20 次业务请求）'
+      - alert: ShoppingApiSlow
+        expr: histogram_quantile(0.95, sum by (le) (rate(shopping_http_request_duration_seconds_bucket{job="shopping-api",route!~"/health.*|/metrics"}[5m]))) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'API P95 响应时间持续超过 1 秒'

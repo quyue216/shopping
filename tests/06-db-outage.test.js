@@ -12,9 +12,11 @@ import {
 import { startApi, startProvider, startWorker, waitForLog, stopAll } from './helpers/processes.js';
 import { signToken, postOrder, getHealth } from './helpers/api.js';
 
-const CONTAINER = 'shopping-postgres';
+const enabled = process.env.RUN_DB_OUTAGE === '1';
+const CONTAINER = process.env.TEST_DB_CONTAINER;
 
 function docker(...args) {
+  //spawnSync('git', ['status']);
   return spawnSync('docker', args, { encoding: 'utf8' });
 }
 
@@ -28,10 +30,14 @@ async function waitDbUp(timeoutMs = 60000) {
 }
 
 before(async () => {
+  if (!enabled) return;
+  if (!CONTAINER) throw new Error('断库测试必须显式指定 TEST_DB_CONTAINER');
+  if (!dockerAvailable()) throw new Error('已启用断库测试，但 docker 不可用');
   await ensureTestDatabase();
 });
 
 after(async () => {
+  if (!enabled) return;
   // 任何失败路径都必须把数据库拉回来
   docker('start', CONTAINER);
   try { await waitDbUp(); } catch { /* 尽力恢复 */ }
@@ -39,8 +45,7 @@ after(async () => {
   await closePool();
 });
 
-test('API：数据库断开时返回 500 不崩溃，恢复后可正常下单', { timeout: 120000 }, async (t) => {
-  if (!dockerAvailable()) return t.skip('docker 不可用');
+test('API：数据库断开时返回 500 不崩溃，恢复后可正常下单', { timeout: 120000, skip: !enabled }, async () => {
   await resetDb();
 
   const api = startApi();
@@ -74,8 +79,7 @@ test('API：数据库断开时返回 500 不崩溃，恢复后可正常下单', 
   assert.equal(up.status, 201, `恢复后应能下单，实际 ${up.status}: ${JSON.stringify(up.body)}`);
 });
 
-test('Worker：数据库断开期间存活并报错，恢复后继续处理任务', { timeout: 120000 }, async (t) => {
-  if (!dockerAvailable()) return t.skip('docker 不可用');
+test('Worker：数据库断开期间存活并报错，恢复后继续处理任务', { timeout: 120000, skip: !enabled }, async () => {
   await resetDb();
 
   const provider = startProvider();

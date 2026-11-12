@@ -1,4 +1,6 @@
-import { writeSync } from 'node:fs';
+import { workerConfig } from '../config.js';
+import { logger, logContext } from '../observability/logger.js';
+import { taskResults } from '../observability/metrics.js';
 import pool from '../db/pool.js';
 import { claimNextTask, finishTask, rescheduleTask } from '../repositories/paymentTaskRepository.js';
 import { getPaymentById, markPaymentProcessing, updatePaymentResult } from '../repositories/paymentRepository.js';
@@ -7,15 +9,16 @@ import { increaseStock } from '../repositories/productRepository.js';
 import { validateProviderFinalAmount } from '../utils/providerResult.js';
 
 // 租约时长：Worker 必须在此时间内写回结果，超时任务可被其他 Worker 回收
-const LEASE_SECONDS = Number(process.env.WORKER_LEASE_SECONDS) || 30;
+const config = workerConfig();
+const LEASE_SECONDS = config.leaseSeconds;
 // 最大尝试次数，超过后任务置 failed，不再重试（进入人工排查）
-const MAX_ATTEMPTS = Number(process.env.WORKER_MAX_ATTEMPTS) || 5;
+const MAX_ATTEMPTS = config.maxAttempts;
 
 // ---- 外部支付平台（独立服务 src/provider.js）的 HTTP 调用 ----
 // Worker 与支付平台之间只有网络边界：平台崩溃/重启不影响本进程，
 // 网络层失败一律视为"结果不明确"，按超时路径处理（可能已扣款，须查询确认）
-const PAYMENT_PROVIDER_URL = process.env.PAYMENT_PROVIDER_URL || 'http://localhost:4100';
-const PAYMENT_PROVIDER_TIMEOUT_MS = Number(process.env.PAYMENT_PROVIDER_TIMEOUT_MS) || 3000;
+const PAYMENT_PROVIDER_URL = config.providerUrl;
+const PAYMENT_PROVIDER_TIMEOUT_MS = config.timeoutMs;
 
 /** 网络超时错误：此时平台可能已扣款，结果不明确 */
 export class PaymentTimeoutError extends Error {
@@ -63,7 +66,9 @@ async function providerQuery({ idempotencyKey }) {
 
 /** 领取一个待处理任务；没有可领取任务时返回 null */
 export async function claimNext() {
-  return claimNextTask(pool, LEASE_SECONDS);
+  const task = await claimNextTask(pool, LEASE_SECONDS);
+  if (task) logger.info('worker.task_claimed', { taskId: String(task.id), paymentId: String(task.payment_id), attempt: task.attempts, version: task.version });
+  return task;
 }
 
 /** 失败退避：attempts 越大等得越久，封顶 60 秒 */
@@ -149,7 +154,7 @@ function retryOrFail(task, reason) {
         status: 'failed',
         lastError: finalReason,
       });
-      return { outcome: 'failed', reason: finalReason, writeback };
+      return { outcome: 'failed', deadLetter: true, reason: finalReason, writeback };
     }
     const writeback = await rescheduleTask(client, {
       taskId: task.id,
@@ -165,12 +170,14 @@ function retryOrFail(task, reason) {
  * 执行领取到的支付任务。
  * 注意：领取 SQL 单语句自动提交，锁已释放；此函数内的网络调用不占用任何数据库锁。
  */
-export async function processPaymentTask(task) {
+async function executePaymentTask(task) {
   const payment = await getPaymentById(pool, task.payment_id);
+  if (payment) logContext.getStore().orderId = String(payment.order_id);
   if (!payment) {
     const reason = `支付记录 ${task.payment_id} 不存在`;
     return withTaskWriteback(async (client) => ({
       outcome: 'failed',
+      deadLetter: true,
       reason,
       writeback: await finishTask(client, {
         taskId: task.id,
@@ -262,10 +269,8 @@ export async function processPaymentTask(task) {
     if (result.status === 'succeeded') {
       // 手动故障演练：平台已确认扣款成功，但本地写回事务尚未开始。
       // 必须终止进程，不能 throw（会被 tick 捕获），也不执行优雅退出。
-      if (process.env.WORKER_CRASH_AFTER_PAY_SUCCESS === '1') {
-        writeSync(2, `[worker] simulated crash after provider success: task=${task.id} ` +
-          `payment=${payment.id} idempotencyKey=${payment.idempotency_key} ` +
-          `providerTransactionId=${result.providerTransactionId}; local writeback skipped (exit 86)\n`);
+      if (config.crashAfterSuccess) {
+        logger.error('worker.simulated_crash', { message: 'simulated crash after provider success; local writeback skipped (exit 86)', taskId: String(task.id), paymentId: String(payment.id), orderId: String(payment.order_id), providerTransactionId: result.providerTransactionId });
         process.exit(86);
       }
       return finalizeSuccess(task, payment, result);
@@ -273,4 +278,18 @@ export async function processPaymentTask(task) {
     return finalizeBusinessFailure(task, payment, result.reason || '支付失败');
   }
   return markUnknown(task, payment, '支付平台未返回明确的支付终态');
+}
+
+export async function processPaymentTask(task) {
+  return logContext.run({ taskId: String(task.id), paymentId: String(task.payment_id) }, async () => {
+    const start = performance.now();
+    const result = await executePaymentTask(task);
+    const outcome = result.deadLetter ? 'dead_letter' : result.outcome;
+    taskResults.inc({ outcome });
+    const fields = { outcome, attempt: task.attempts, version: task.version, reason: result.reason, durationMs: Math.round(performance.now() - start) };
+    if (['dead_letter', 'retry', 'unknown'].includes(outcome)) logger.warn('worker.task_result', fields);
+    else logger.info('worker.task_result', fields);
+    if (outcome === 'succeeded' || (outcome === 'failed' && !result.deadLetter)) logger.info(`payment.${outcome}`, fields);
+    return result;
+  });
 }

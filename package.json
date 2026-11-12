@@ -1,7 +1,7 @@
 {
   "name": "shopping",
   "version": "1.0.0",
-  "description": "",
+  "description": "PostgreSQL 事务订单、异步支付 Worker、故障恢复与人工对账教学项目",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
@@ -13,10 +13,13 @@
     "provider:dev": "node --env-file-if-exists=.env --watch src/provider.js",
     "migrate": "node --env-file-if-exists=.env scripts/migrate.js",
     "seed": "node --env-file-if-exists=.env scripts/seed.js",
-    "test": "node --test --test-concurrency=1 \"tests/**/*.test.js\"",
+    "test": "node --env-file-if-exists=.env.test --test --test-concurrency=1 \"tests/**/*.test.js\"",
+    "docs:check": "node scripts/check-openapi.js",
     "tasks:dead-letter": "node --env-file-if-exists=.env scripts/list-dead-letter-tasks.js",
     "tasks:reconcile": "node --env-file-if-exists=.env scripts/reconcile-dead-letter-task.js"
   },
+  "engines": { "node": ">=22.22.0" },
+  "volta": { "node": "22.22.0", "npm": "10.9.4" },
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -24,6 +27,10 @@
     "bcryptjs": "^3.0.3",
     "express": "^5.3.0",
     "jsonwebtoken": "^9.0.3",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "prom-client": "^15.1.2"
+  },
+  "devDependencies": {
+    "@apidevtools/swagger-parser": "^13.1.0"
   }
 }

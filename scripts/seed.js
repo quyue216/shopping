@@ -4,6 +4,7 @@
  */
 
 import pg from 'pg';
+import { databaseConfig } from '../src/config.js';
 
 const { Client } = pg;
 
@@ -16,14 +17,7 @@ const SAMPLE_PRODUCTS = [
 ];
 
 async function main() {
-  const client = new Client({
-    host: process.env.PGHOST || 'localhost',
-    port: Number(process.env.PGPORT) || 5432,
-    user: process.env.PGUSER || 'postgres',
-    password: process.env.PGPASSWORD || 'postgres',
-    database: process.env.PGDATABASE || 'shopping',
-    connectionTimeoutMillis: 3000,
-  });
+  const client = new Client(databaseConfig());
   await client.connect();
   try {
     const { rows } = await client.query('SELECT count(*)::int AS c FROM products');

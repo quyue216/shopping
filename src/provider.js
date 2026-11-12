@@ -19,10 +19,14 @@ import express from 'express';
 import pool from './db/pool.js';
 import { parseCents } from './utils/money.js';
 import { HttpError } from './httpError.js';
+import { providerConfig } from './config.js';
+import { logger } from './observability/logger.js';
+import { requestLogging, metricsHandler } from './observability/http.js';
 
-const MODE = process.env.PAYMENT_MOCK_MODE || 'success';
-const LATENCY_MS = Number(process.env.PAYMENT_MOCK_LATENCY_MS) || 100;
-const PORT = Number(process.env.PAYMENT_PROVIDER_PORT) || 4100;
+const config = providerConfig();
+const MODE = config.mode;
+const LATENCY_MS = config.latencyMs;
+const PORT = config.port;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -68,7 +72,9 @@ async function insertLedger({ idempotencyKey, amount, status, providerTransactio
 }
 
 const app = express();
+app.use(requestLogging);
 app.use(express.json());
+app.get('/metrics', metricsHandler(config.metrics));
 
 // drop 模式专用：记录已丢过请求的幂等键，每个键只丢第一次（重试正常处理）
 const droppedOnce = new Set();
@@ -144,20 +150,25 @@ app.use((err, req, res, next) => {
   if (err instanceof HttpError) {
     return res.status(err.status).json({ status: 'error', message: err.message });
   }
-  console.error('[payment-provider] error:', err);
+  logger.error('provider.error', { error: err });
   res.status(500).json({ status: 'error', message: 'Internal server error' });
 });
 
 const server = app.listen(PORT, () => {
-  console.log(`[payment-provider] listening on http://localhost:${PORT} (mode=${MODE})`);
+  logger.info('provider.started', { message: 'listening', port: PORT, mode: MODE });
 });
+server.on('error', (error) => { logger.error('provider.listen_error', { error }); process.exitCode = 1; });
 
 /** 优雅退出：停止接收新请求 → 关闭连接池 → 退出进程 */
+let stopping = false;
 async function shutdown() {
-  console.log('[payment-provider] shutting down...');
-  server.close();
+  if (stopping) return;
+  stopping = true;
+  logger.info('provider.stopping');
+  const deadline = setTimeout(() => process.exit(1), 15000).unref();
+  await new Promise((resolve) => server.close(resolve));
   await pool.end();
-  process.exit(0);
+  clearTimeout(deadline);
 }
 
 process.on('SIGINT', shutdown);

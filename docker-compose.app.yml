@@ -1,0 +1,47 @@
+# 与 docker-compose.yml 合并使用；本地完整部署，Provider 仍是模拟平台。
+x-app: &app
+  build: .
+  env_file: .env
+  environment: &app-env
+    DATABASE_URL: postgresql://postgres:postgres@postgres:5432/shopping
+    PAYMENT_PROVIDER_URL: http://provider:4100
+    PORT: '3000'
+    PAYMENT_PROVIDER_PORT: '4100'
+    WORKER_METRICS_PORT: '9101'
+
+services:
+  migrate:
+    <<: *app
+    command: ["node", "scripts/migrate.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+  api:
+    <<: *app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PORT:-3000}:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health/db').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 8s
+      retries: 5
+  provider:
+    <<: *app
+    restart: unless-stopped
+    command: ["node", "src/provider.js"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  worker:
+    <<: *app
+    restart: unless-stopped
+    command: ["node", "src/worker.js"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      provider:
+        condition: service_started

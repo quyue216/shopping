@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: shopping_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d shopping_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shopping_test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shopping_test
+      JWT_SECRET: ci-only-test-secret
+      PAYMENT_PROVIDER_URL: http://localhost:4210
+      RUN_DB_OUTAGE: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22.22.0'
+          cache: npm
+      - run: npm ci
+      - run: npm run docs:check
+      - run: npm run migrate
+      - run: npm test
+        env:
+          TEST_DB_CONTAINER: ${{ job.services.postgres.id }}
+      - name: Validate monitoring configuration and alert rules
+        run: >-
+          docker run --rm --entrypoint promtool
+          -v "$PWD/monitoring:/etc/prometheus:ro"
+          prom/prometheus:v3.5.0 check config /etc/prometheus/prometheus.yml
+      - name: Database logs on failure
+        if: failure()
+        env:
+          TEST_DB_CONTAINER: ${{ job.services.postgres.id }}
+        run: docker logs "${TEST_DB_CONTAINER}"

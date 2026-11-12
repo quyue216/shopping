@@ -1,0 +1,117 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Shopping 异步支付 API",
+    "version": "1.0.0",
+    "description": "教学工程，真实路径没有 /api 前缀。金额单位为分，响应金额均为十进制字符串，上限 9223372036854775807。下单成功只代表事务已提交，支付由 Worker 异步完成；轮询订单查询支付终态。API 返回 X-Request-Id；可传入 1–64 位字母数字、下划线或连字符的 X-Request-Id，非法值会重新生成。Provider 是独立模拟服务，不接收业务 JWT，不应暴露到公网。"
+  },
+  "servers": [{ "url": "http://localhost:3000", "description": "API；部署时更换服务器地址" }],
+  "tags": [{ "name": "认证" }, { "name": "商品" }, { "name": "订单" }, { "name": "运维" }, { "name": "模拟支付平台" }],
+  "paths": {
+    "/health": {
+      "get": { "tags": ["运维"], "operationId": "health", "summary": "进程存活，不检查数据库", "responses": { "200": { "$ref": "#/components/responses/Healthy" } } }
+    },
+    "/health/db": {
+      "get": { "tags": ["运维"], "operationId": "databaseHealth", "summary": "数据库就绪检查", "responses": { "200": { "$ref": "#/components/responses/Healthy" }, "503": { "description": "数据库不可用，code=DATABASE_UNAVAILABLE", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } } }
+    },
+    "/auth/register": {
+      "post": {
+        "tags": ["认证"], "operationId": "register", "summary": "注册并取得 JWT",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["username", "email", "password"], "properties": { "username": { "type": "string", "minLength": 1, "maxLength": 50, "description": "去除首尾空白后不能为空" }, "email": { "type": "string", "format": "email", "maxLength": 255 }, "password": { "type": "string", "minLength": 8, "format": "password" } } }, "example": { "username": "alice", "email": "alice@example.com", "password": "example-password" } } } },
+        "responses": { "201": { "description": "注册成功", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AuthResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "409": { "description": "用户名或邮箱已注册，code=USER_EXISTS", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "500": { "$ref": "#/components/responses/InternalError" } }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": ["认证"], "operationId": "login", "summary": "用户名或邮箱登录",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["identifier", "password"], "properties": { "identifier": { "type": "string", "minLength": 1, "description": "用户名或邮箱" }, "password": { "type": "string", "minLength": 1, "format": "password" } } } } } },
+        "responses": { "200": { "description": "登录成功", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AuthResult" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "500": { "$ref": "#/components/responses/InternalError" } }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": ["认证"], "operationId": "currentUser", "summary": "查询当前用户", "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "当前用户", "content": { "application/json": { "schema": { "type": "object", "required": ["user"], "properties": { "user": { "$ref": "#/components/schemas/User" } } } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" }, "500": { "$ref": "#/components/responses/InternalError" } }
+      }
+    },
+    "/products": {
+      "get": { "tags": ["商品"], "operationId": "listProducts", "summary": "公开商品列表（当前无分页）", "responses": { "200": { "description": "商品列表", "content": { "application/json": { "schema": { "type": "object", "required": ["products"], "properties": { "products": { "type": "array", "items": { "$ref": "#/components/schemas/Product" } } } } } } }, "500": { "$ref": "#/components/responses/InternalError" } } },
+      "post": {
+        "tags": ["商品"], "operationId": "createProduct", "summary": "创建商品；教学项目中任意登录用户可操作", "security": [{ "bearerAuth": [] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["name", "price"], "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 255 }, "price": { "$ref": "#/components/schemas/MoneyInput" }, "stock": { "type": "integer", "minimum": 0, "maximum": 2147483647, "default": 0 } } }, "example": { "name": "机械键盘", "price": "29900", "stock": 50 } } } },
+        "responses": { "201": { "$ref": "#/components/responses/Product" }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "500": { "$ref": "#/components/responses/InternalError" } }
+      }
+    },
+    "/products/{id}": {
+      "parameters": [{ "$ref": "#/components/parameters/Id" }],
+      "get": { "tags": ["商品"], "operationId": "getProduct", "summary": "公开商品详情", "responses": { "200": { "$ref": "#/components/responses/Product" }, "400": { "$ref": "#/components/responses/BadRequest" }, "404": { "$ref": "#/components/responses/NotFound" }, "500": { "$ref": "#/components/responses/InternalError" } } }
+    },
+    "/orders": {
+      "post": {
+        "tags": ["订单"], "operationId": "createOrder", "summary": "创建订单并投递异步支付任务", "security": [{ "bearerAuth": [] }],
+        "description": "幂等范围为当前用户 + 去首尾空白后的 idempotencyKey。同商品多行合并并按商品 ID 排序比较；同键同内容返回原订单及当前状态，不再次扣库存、不产生新支付。价格使用首次下单快照；重放不按当前价格重算。同键不同购买内容返回 409。不同用户可以使用同一个键。201 不表示支付成功；unknown/processing 不能视为支付失败。请求体默认上限为 Express 的 100KB，超出返回 413。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["idempotencyKey", "items"], "properties": { "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 128, "description": "trim 后不能为空，最长 128 字符" }, "items": { "type": "array", "minItems": 1, "items": { "type": "object", "required": ["productId", "quantity"], "properties": { "productId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }, "quantity": { "type": "integer", "minimum": 1, "maximum": 2147483647, "description": "合并后同商品的总量也不得超过该上限；接口兼容数字字符串" } } } } } }, "example": { "idempotencyKey": "order_123", "items": [{ "productId": 1, "quantity": 2 }] } } } },
+        "responses": {
+          "201": { "description": "首次创建，replayed=false；订单通常为 pending，等待 Worker", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatedOrder" }, "example": { "orderId": 1, "status": "pending", "totalAmount": "59800", "replayed": false } } } },
+          "200": { "description": "同键同内容重放，replayed=true，返回原订单当前状态", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatedOrder" } } } },
+          "400": { "description": "参数错误、商品不存在或总金额超过 BIGINT，code=VALIDATION_ERROR", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "description": "code=IDEMPOTENCY_CONFLICT（内容不同）或 INSUFFICIENT_STOCK（库存不足）；整个事务回滚", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "413": { "description": "请求体过大，code=PAYLOAD_TOO_LARGE" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/orders/{id}": {
+      "parameters": [{ "$ref": "#/components/parameters/Id" }],
+      "get": {
+        "tags": ["订单"], "operationId": "getOrder", "summary": "查询自己的订单、明细快照和支付状态", "security": [{ "bearerAuth": [] }],
+        "description": "订单不存在或属于他人均返回 404。订单 paid + 支付 succeeded 才代表支付成功；订单 cancelled + 支付 failed 表示明确业务失败且库存已归还。任务死信不会直接取消订单。",
+        "responses": { "200": { "description": "订单详情", "content": { "application/json": { "schema": { "type": "object", "required": ["order"], "properties": { "order": { "$ref": "#/components/schemas/Order" } } } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" }, "500": { "$ref": "#/components/responses/InternalError" } }
+      }
+    },
+    "/metrics": {
+      "get": { "tags": ["运维"], "operationId": "metrics", "summary": "Prometheus 指标", "description": "API 3000、Provider 4100 和 Worker 独立指标端口均提供此路径。Worker 端口由 WORKER_METRICS_PORT 控制，0 表示关闭。METRICS_TOKEN 为空时本地匿名可读；生产强制要求至少 32 字符的 Bearer 凭据。API 额外采集全库队列；数据库故障时返回 200 且 shopping_queue_collection_success=0。", "security": [{ "metricsAuth": [] }], "responses": { "200": { "description": "Prometheus 文本", "content": { "text/plain": { "schema": { "type": "string" } } } }, "401": { "description": "缺少或错误的指标凭据" }, "500": { "$ref": "#/components/responses/InternalError" } } }
+    },
+    "/payments": {
+      "servers": [{ "url": "http://localhost:4100" }],
+      "post": {
+        "tags": ["模拟支付平台"], "operationId": "providerPay", "summary": "内部模拟扣款（由 Worker 调用）",
+        "description": "Provider 全局幂等键唯一。同键同金额复用首个结果，不同金额返回 409。amount 必须大于 0；零元订单由 Worker 本地直接完成。模拟模式 success/fail/timeout/drop；timeout 已记账但断开连接，drop 每键第一次不记账并断开连接。重启 drop 的内存标记会清空，账本仍持久化。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["idempotencyKey", "amount"], "properties": { "idempotencyKey": { "type": "string", "minLength": 1 }, "amount": { "$ref": "#/components/schemas/MoneyInput" } } } } } },
+        "responses": { "200": { "description": "支付终态（业务失败也返回 HTTP 200）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderResult" } } } }, "400": { "description": "参数无效，返回 {status: error, message}" }, "409": { "description": "同键金额冲突，返回 {status: error, message}" }, "500": { "description": "平台内部错误，返回 {status: error, message}" } }
+      }
+    },
+    "/payments/{idempotencyKey}": {
+      "servers": [{ "url": "http://localhost:4100" }],
+      "get": {
+        "tags": ["模拟支付平台"], "operationId": "providerQuery", "summary": "内部查询原交易",
+        "parameters": [{ "name": "idempotencyKey", "in": "path", "required": true, "schema": { "type": "string" }, "description": "路径中须 URL 编码，Worker 通常使用 pay-{orderId}" }],
+        "responses": { "200": { "description": "查到交易", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderResult" } } } }, "404": { "description": "查无交易，返回 {status: not_found}；Worker 才可复用原键及金额补发。人工对账默认只读。" }, "500": { "description": "查询失败不能推断未扣款，禁止换新键盲目重付" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": { "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }, "metricsAuth": { "type": "http", "scheme": "bearer", "description": "独立 METRICS_TOKEN，不能使用登录 JWT" } },
+    "parameters": { "Id": { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 } } },
+    "responses": {
+      "Healthy": { "description": "健康", "content": { "application/json": { "schema": { "type": "object", "required": ["status"], "properties": { "status": { "type": "string", "enum": ["ok"] } } } } } },
+      "BadRequest": { "description": "参数或 JSON 无效，code=VALIDATION_ERROR", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Unauthorized": { "description": "Bearer token 缺失、无效、过期，或账号密码错误，code=UNAUTHORIZED", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NotFound": { "description": "资源不存在或无权查看，code=NOT_FOUND", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "InternalError": { "description": "服务端错误（包括数据库不可用），code=INTERNAL_ERROR；通过 requestId 查日志，客户端不应推断订单未创建，应复用原幂等键重试", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Product": { "description": "商品详情", "content": { "application/json": { "schema": { "type": "object", "required": ["product"], "properties": { "product": { "$ref": "#/components/schemas/Product" } } } } } }
+    },
+    "schemas": {
+      "Money": { "type": "string", "pattern": "^[0-9]+$", "description": "整数分，0–9223372036854775807，始终用字符串返回", "example": "29900" },
+      "MoneyInput": { "description": "非负整数分；字符串不超过 BIGINT 上限。number 必须是安全整数，大金额必须使用字符串。", "oneOf": [{ "$ref": "#/components/schemas/Money" }, { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }] },
+      "Error": { "type": "object", "required": ["status", "code", "message", "requestId"], "properties": { "status": { "type": "string", "enum": ["error"] }, "code": { "type": "string", "enum": ["VALIDATION_ERROR", "UNAUTHORIZED", "NOT_FOUND", "CONFLICT", "USER_EXISTS", "IDEMPOTENCY_CONFLICT", "INSUFFICIENT_STOCK", "PAYLOAD_TOO_LARGE", "DATABASE_UNAVAILABLE", "INTERNAL_ERROR"] }, "message": { "type": "string" }, "requestId": { "type": "string" } } },
+      "User": { "type": "object", "required": ["id", "username", "email"], "properties": { "id": { "type": "string", "description": "pg BIGINT 返回字符串" }, "username": { "type": "string" }, "email": { "type": "string" }, "created_at": { "type": "string", "format": "date-time" } } },
+      "AuthResult": { "type": "object", "required": ["user", "token"], "properties": { "user": { "$ref": "#/components/schemas/User" }, "token": { "type": "string", "description": "后续请求使用 Authorization: Bearer <token>" } } },
+      "Product": { "type": "object", "required": ["productId", "name", "price", "stock"], "properties": { "productId": { "type": "integer" }, "name": { "type": "string" }, "price": { "$ref": "#/components/schemas/Money" }, "stock": { "type": "integer", "minimum": 0 } } },
+      "CreatedOrder": { "type": "object", "required": ["orderId", "status", "totalAmount", "replayed"], "properties": { "orderId": { "type": "integer" }, "status": { "type": "string", "enum": ["pending", "paid", "cancelled"] }, "totalAmount": { "$ref": "#/components/schemas/Money" }, "replayed": { "type": "boolean" } } },
+      "Order": { "type": "object", "required": ["orderId", "status", "totalAmount", "items", "payment", "createdAt"], "properties": { "orderId": { "type": "integer" }, "status": { "type": "string", "enum": ["pending", "paid", "cancelled"] }, "totalAmount": { "$ref": "#/components/schemas/Money" }, "createdAt": { "type": "string", "format": "date-time" }, "items": { "type": "array", "items": { "type": "object", "required": ["productId", "productName", "unitPrice", "quantity"], "properties": { "productId": { "type": "integer" }, "productName": { "type": "string" }, "unitPrice": { "$ref": "#/components/schemas/Money" }, "quantity": { "type": "integer" } } } }, "payment": { "type": "object", "nullable": true, "required": ["status", "amount", "providerTransactionId"], "properties": { "status": { "type": "string", "enum": ["pending", "processing", "unknown", "succeeded", "failed"] }, "amount": { "$ref": "#/components/schemas/Money" }, "providerTransactionId": { "type": "string", "nullable": true } } } } },
+      "ProviderResult": { "type": "object", "required": ["status", "amount"], "properties": { "status": { "type": "string", "enum": ["succeeded", "failed"] }, "amount": { "$ref": "#/components/schemas/Money" }, "providerTransactionId": { "type": "string", "description": "成功时返回" }, "reason": { "type": "string", "description": "失败时返回" } } }
+    }
+  }
+}

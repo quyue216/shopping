@@ -1,7 +1,24 @@
 // 本模块必须最先导入（import 顺序即执行顺序）：
 // 在连接池、Worker 等模块初始化之前注入测试环境。
+// 永不读取 .env，也不继承开发 DATABASE_URL；自定义连接必须显式指定测试 URL。
+if (process.env.TEST_DATABASE_URL) {
+  const url = new URL(process.env.TEST_DATABASE_URL);
+  if (url.pathname !== '/shopping_test') throw new Error('TEST_DATABASE_URL 必须指向 shopping_test');
+  process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
+} else {
+  delete process.env.DATABASE_URL;
+  process.env.PGHOST = 'localhost';
+  process.env.PGPORT = '5432';
+  process.env.PGUSER = 'postgres';
+  process.env.PGPASSWORD = 'postgres';
+}
+process.env.NODE_ENV = 'test';
 process.env.PGDATABASE = 'shopping_test';
 process.env.JWT_SECRET = 'test-secret';
+process.env.JWT_EXPIRES_IN = '2h';
+process.env.METRICS_TOKEN = '';
+process.env.WORKER_METRICS_PORT = '0';
+process.env.WORKER_CRASH_AFTER_PAY_SUCCESS = '0';
 
 export const TEST_DB = 'shopping_test';
 

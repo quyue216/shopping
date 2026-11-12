@@ -30,11 +30,11 @@ export async function getById(productId) {
 
 /** 创建商品；name 非空，price 为非负整数（分，数字或十进制字符串），stock 为非负整数 */
 export async function create({ name, price, stock = 0 }) {
-  if (typeof name !== 'string' || name.trim() === '') {
+  if (typeof name !== 'string' || name.trim() === '' || name.trim().length > 255) {
     throw new HttpError(400, '商品名称不能为空');
   }
   const priceCents = parseCents(price, '价格');
-  if (!Number.isInteger(stock) || stock < 0) {
+  if (!Number.isInteger(stock) || stock < 0 || stock > 2147483647) {
     throw new HttpError(400, '库存必须为非负整数');
   }
   const row = await insertProduct(pool, { name: name.trim(), price: priceCents.toString(), stock });
